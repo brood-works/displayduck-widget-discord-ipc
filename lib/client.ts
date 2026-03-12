@@ -1,4 +1,4 @@
-import EventEmitter from 'events';
+import { EventEmitter } from 'events';
 import { IPCTransport } from './ipc';
 import { RelationshipTypes, RPCCommands, RPCEvents } from './constants';
 import { uuid } from './utils';
