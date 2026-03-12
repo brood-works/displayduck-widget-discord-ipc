@@ -16,7 +16,7 @@
             "id": "discord-ipc",
             "name": "Discord IPC",
             "description": "Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
-            "platform": "windows",
+            "platform": ["windows", "macos"],
             "minWidth": 200,
             "minHeight": 100,
             "config": {
