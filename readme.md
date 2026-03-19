@@ -51,9 +51,11 @@ Currently the <a href="https://docs.discord.com/developers/topics/rpc">Discord R
 
 1. Go to <a href="https://discord.com/developers/applications">applications</a>
 2. Make up an application name *(eg DisplayDuck Widget)*
-3. Go to `Oauth2` and setup `http://localhost` as Redirect URL under `Redirects`
-4. Go (back) to `General Information` and copy the `Application ID`
-5. Use this `Application ID` in the `Application Client ID` field in the widget config
+3. Go to `Oauth2` and setup your redirect URL under `Redirects` (for example `http://localhost`)
+4. On that same `Oauth2` page, enable `Public Client`
+5. Go (back) to `General Information` and copy the `Application ID`
+6. Use this `Application ID` in the `Application Client ID` field in the widget config
+7. If you changed the redirect URL from `http://localhost`, set the same exact value in the widget's `OAuth Redirect URI` config field
 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

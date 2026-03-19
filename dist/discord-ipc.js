@@ -1,635 +1,1001 @@
-const L = /* @__PURE__ */ new Map(), J = (s) => String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"), Q = (s) => {
-  const t = L.get(s);
-  if (t)
-    return t;
-  const e = s.replace(/\bthis\b/g, "__item"), i = new Function("scope", `with (scope) { return (${e}); }`);
-  return L.set(s, i), i;
-}, y = (s, t) => {
+const expressionCache = /* @__PURE__ */ new Map();
+const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+const compileExpression = (expression) => {
+  const cached = expressionCache.get(expression);
+  if (cached) {
+    return cached;
+  }
+  const transformed = expression.replace(/\bthis\b/g, "__item");
+  const fn = new Function("scope", `with (scope) { return (${transformed}); }`);
+  expressionCache.set(expression, fn);
+  return fn;
+};
+const evaluate = (expression, scope) => {
   try {
-    return Q(s)(t);
+    return compileExpression(expression)(scope);
   } catch {
     return "";
   }
-}, R = (s, t = 0, e) => {
-  const i = [];
-  let n = t;
-  for (; n < s.length; ) {
-    const r = s.indexOf("{{", n);
-    if (r === -1)
-      return i.push({ type: "text", value: s.slice(n) }), { nodes: i, index: s.length };
-    r > n && i.push({ type: "text", value: s.slice(n, r) });
-    const o = s.indexOf("}}", r + 2);
-    if (o === -1)
-      return i.push({ type: "text", value: s.slice(r) }), { nodes: i, index: s.length };
-    const a = s.slice(r + 2, o).trim();
-    if (n = o + 2, a === "/if" || a === "/each") {
-      if (e === a)
-        return { nodes: i, index: n };
-      i.push({ type: "text", value: `{{${a}}}` });
-      continue;
-    }
-    if (a.startsWith("#if ")) {
-      const c = R(s, n, "/if");
-      i.push({
-        type: "if",
-        condition: a.slice(4).trim(),
-        children: c.nodes
-      }), n = c.index;
-      continue;
-    }
-    if (a.startsWith("#each ")) {
-      const c = R(s, n, "/each");
-      i.push({
-        type: "each",
-        source: a.slice(6).trim(),
-        children: c.nodes
-      }), n = c.index;
-      continue;
-    }
-    i.push({ type: "expr", value: a });
-  }
-  return { nodes: i, index: n };
-}, O = (s, t) => {
-  let e = "";
-  for (const i of s) {
-    if (i.type === "text") {
-      e += i.value;
-      continue;
-    }
-    if (i.type === "expr") {
-      e += J(y(i.value, t));
-      continue;
-    }
-    if (i.type === "if") {
-      y(i.condition, t) && (e += O(i.children, t));
-      continue;
-    }
-    const n = y(i.source, t);
-    if (Array.isArray(n))
-      for (const r of n) {
-        const o = Object.create(t);
-        o.__item = r, e += O(i.children, o);
-      }
-  }
-  return e;
-}, X = (s) => {
-  const t = R(s).nodes;
-  return (e) => O(t, e);
 };
-function Z(s, t = !1) {
-  return window.__TAURI_INTERNALS__.transformCallback(s, t);
+const parseNodes = (template2, from = 0, stopAt) => {
+  const nodes = [];
+  let index = from;
+  while (index < template2.length) {
+    const start = template2.indexOf("{{", index);
+    if (start === -1) {
+      nodes.push({ type: "text", value: template2.slice(index) });
+      return { nodes, index: template2.length };
+    }
+    if (start > index) {
+      nodes.push({ type: "text", value: template2.slice(index, start) });
+    }
+    const close = template2.indexOf("}}", start + 2);
+    if (close === -1) {
+      nodes.push({ type: "text", value: template2.slice(start) });
+      return { nodes, index: template2.length };
+    }
+    const token = template2.slice(start + 2, close).trim();
+    index = close + 2;
+    if (token === "/if" || token === "/each") {
+      if (stopAt === token) {
+        return { nodes, index };
+      }
+      nodes.push({ type: "text", value: `{{${token}}}` });
+      continue;
+    }
+    if (token.startsWith("#if ")) {
+      const child = parseNodes(template2, index, "/if");
+      nodes.push({
+        type: "if",
+        condition: token.slice(4).trim(),
+        children: child.nodes
+      });
+      index = child.index;
+      continue;
+    }
+    if (token.startsWith("#each ")) {
+      const child = parseNodes(template2, index, "/each");
+      nodes.push({
+        type: "each",
+        source: token.slice(6).trim(),
+        children: child.nodes
+      });
+      index = child.index;
+      continue;
+    }
+    nodes.push({ type: "expr", value: token });
+  }
+  return { nodes, index };
+};
+const renderNodes = (nodes, scope) => {
+  let output = "";
+  for (const node of nodes) {
+    if (node.type === "text") {
+      output += node.value;
+      continue;
+    }
+    if (node.type === "expr") {
+      output += escapeHtml(evaluate(node.value, scope));
+      continue;
+    }
+    if (node.type === "if") {
+      if (Boolean(evaluate(node.condition, scope))) {
+        output += renderNodes(node.children, scope);
+      }
+      continue;
+    }
+    const items = evaluate(node.source, scope);
+    if (!Array.isArray(items)) {
+      continue;
+    }
+    for (const item of items) {
+      const childScope = Object.create(scope);
+      childScope.__item = item;
+      output += renderNodes(node.children, childScope);
+    }
+  }
+  return output;
+};
+const createTemplateRenderer = (template2) => {
+  const parsed = parseNodes(template2).nodes;
+  return (scope) => renderNodes(parsed, scope);
+};
+typeof SuppressedError === "function" ? SuppressedError : function(error, suppressed, message) {
+  var e = new Error(message);
+  return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+};
+function transformCallback(callback, once = false) {
+  return window.__TAURI_INTERNALS__.transformCallback(callback, once);
 }
-async function g(s, t = {}, e) {
-  return window.__TAURI_INTERNALS__.invoke(s, t, e);
+async function invoke(cmd, args = {}, options) {
+  return window.__TAURI_INTERNALS__.invoke(cmd, args, options);
 }
-function H(s, t = "asset") {
-  return window.__TAURI_INTERNALS__.convertFileSrc(s, t);
+function convertFileSrc(filePath, protocol = "asset") {
+  return window.__TAURI_INTERNALS__.convertFileSrc(filePath, protocol);
 }
-var P;
-(function(s) {
-  s.WINDOW_RESIZED = "tauri://resize", s.WINDOW_MOVED = "tauri://move", s.WINDOW_CLOSE_REQUESTED = "tauri://close-requested", s.WINDOW_DESTROYED = "tauri://destroyed", s.WINDOW_FOCUS = "tauri://focus", s.WINDOW_BLUR = "tauri://blur", s.WINDOW_SCALE_FACTOR_CHANGED = "tauri://scale-change", s.WINDOW_THEME_CHANGED = "tauri://theme-changed", s.WINDOW_CREATED = "tauri://window-created", s.WEBVIEW_CREATED = "tauri://webview-created", s.DRAG_ENTER = "tauri://drag-enter", s.DRAG_OVER = "tauri://drag-over", s.DRAG_DROP = "tauri://drag-drop", s.DRAG_LEAVE = "tauri://drag-leave";
-})(P || (P = {}));
-async function tt(s, t) {
-  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(s, t), await g("plugin:event|unlisten", {
-    event: s,
-    eventId: t
+var TauriEvent;
+(function(TauriEvent2) {
+  TauriEvent2["WINDOW_RESIZED"] = "tauri://resize";
+  TauriEvent2["WINDOW_MOVED"] = "tauri://move";
+  TauriEvent2["WINDOW_CLOSE_REQUESTED"] = "tauri://close-requested";
+  TauriEvent2["WINDOW_DESTROYED"] = "tauri://destroyed";
+  TauriEvent2["WINDOW_FOCUS"] = "tauri://focus";
+  TauriEvent2["WINDOW_BLUR"] = "tauri://blur";
+  TauriEvent2["WINDOW_SCALE_FACTOR_CHANGED"] = "tauri://scale-change";
+  TauriEvent2["WINDOW_THEME_CHANGED"] = "tauri://theme-changed";
+  TauriEvent2["WINDOW_CREATED"] = "tauri://window-created";
+  TauriEvent2["WEBVIEW_CREATED"] = "tauri://webview-created";
+  TauriEvent2["DRAG_ENTER"] = "tauri://drag-enter";
+  TauriEvent2["DRAG_OVER"] = "tauri://drag-over";
+  TauriEvent2["DRAG_DROP"] = "tauri://drag-drop";
+  TauriEvent2["DRAG_LEAVE"] = "tauri://drag-leave";
+})(TauriEvent || (TauriEvent = {}));
+async function _unlisten(event, eventId) {
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, eventId);
+  await invoke("plugin:event|unlisten", {
+    event,
+    eventId
   });
 }
-async function A(s, t, e) {
-  var i;
-  const n = (i = void 0) !== null && i !== void 0 ? i : { kind: "Any" };
-  return g("plugin:event|listen", {
-    event: s,
-    target: n,
-    handler: Z(t)
-  }).then((r) => async () => tt(s, r));
+async function listen(event, handler, options) {
+  var _a;
+  const target = (_a = void 0) !== null && _a !== void 0 ? _a : { kind: "Any" };
+  return invoke("plugin:event|listen", {
+    event,
+    target,
+    handler: transformCallback(handler)
+  }).then((eventId) => {
+    return async () => _unlisten(event, eventId);
+  });
 }
-const et = "pack-ipc-transport-open", it = "pack-ipc-transport-data", nt = "pack-ipc-transport-close", st = 5e3, D = (s) => {
-  let t = "";
-  for (let e = 0; e < s.length; e += 1)
-    t += String.fromCharCode(s[e]);
-  return btoa(t);
-}, rt = (s) => {
-  const t = atob(s), e = new Uint8Array(t.length);
-  for (let i = 0; i < t.length; i += 1)
-    e[i] = t.charCodeAt(i);
-  return e;
-}, U = (s) => s instanceof Uint8Array ? s : s instanceof ArrayBuffer ? new Uint8Array(s) : Uint8Array.from(s), ot = () => typeof crypto < "u" && typeof crypto.randomUUID == "function" ? crypto.randomUUID() : `ipc-${Date.now()}-${Math.random().toString(16).slice(2)}`, S = (s, t) => `[IpcTransport session=${s} endpoint=${t}]`, at = (s) => {
-  if (!s)
-    return "";
-  if (typeof s == "string")
-    return s.trim().toLowerCase();
-  if (s instanceof Error)
-    return s.message.trim().toLowerCase();
-  if (typeof s == "object" && s && "error" in s) {
-    const t = s.error;
-    return typeof t == "string" ? t.trim().toLowerCase() : "";
+const OPEN_EVENT = "pack-ipc-transport-open";
+const DATA_EVENT = "pack-ipc-transport-data";
+const CLOSE_EVENT = "pack-ipc-transport-close";
+const CONNECT_TIMEOUT_MS = 5e3;
+const toBase64 = (bytes) => {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    binary += String.fromCharCode(bytes[index]);
   }
-  return String(s).trim().toLowerCase();
-}, C = (s) => {
-  const t = at(s);
-  return t.includes("no such file or directory") || t.includes("os error 2") || t.includes("endpoint is not available") || t.includes("not found");
+  return btoa(binary);
 };
-class ct {
-  constructor(t) {
-    this.connected = !1, this.listeners = {
+const fromBase64 = (value) => {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+const normalizeBinary = (value) => {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  return Uint8Array.from(value);
+};
+const createSessionId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `ipc-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+const logPrefix = (sessionId, endpoint) => `[IpcTransport session=${sessionId} endpoint=${endpoint}]`;
+const normalizeTransportErrorMessage = (value) => {
+  if (!value) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim().toLowerCase();
+  }
+  if (value instanceof Error) {
+    return value.message.trim().toLowerCase();
+  }
+  if (typeof value === "object" && value && "error" in value) {
+    const error = value.error;
+    return typeof error === "string" ? error.trim().toLowerCase() : "";
+  }
+  return String(value).trim().toLowerCase();
+};
+const isMissingEndpointError = (value) => {
+  const message = normalizeTransportErrorMessage(value);
+  return message.includes("no such file or directory") || message.includes("os error 2") || message.includes("endpoint is not available") || message.includes("not found");
+};
+class IpcTransport {
+  constructor(options) {
+    this.connected = false;
+    this.listeners = {
       open: /* @__PURE__ */ new Set(),
       data: /* @__PURE__ */ new Set(),
       close: /* @__PURE__ */ new Set()
-    }, this.tauriListenersReady = null, this.tauriUnlisteners = [], this.endpoint = String(t.endpoint ?? "").trim(), this.sessionId = String(t.sessionId ?? "").trim() || ot();
+    };
+    this.tauriListenersReady = null;
+    this.tauriUnlisteners = [];
+    this.endpoint = String(options.endpoint ?? "").trim();
+    this.sessionId = String(options.sessionId ?? "").trim() || createSessionId();
   }
   async connect() {
     await this.connectWithInitialWrite();
   }
-  async connectWithInitialWrite(t) {
-    if (!this.endpoint)
+  async connectWithInitialWrite(initialData) {
+    if (!this.endpoint) {
       throw new Error("Missing IPC endpoint.");
-    await this.ensureTauriListeners(), await new Promise(async (e, i) => {
-      let n = !1;
-      const r = setTimeout(() => {
-        n || (n = !0, c(), i(new Error(`IPC connect timed out for endpoint ${this.endpoint}`)));
-      }, st), o = this.on("open", () => {
-        n || (n = !0, c(), e());
-      }), a = this.on("close", (h) => {
-        n || (n = !0, c(), C(h.error) || console.error(
-          `${S(this.sessionId, this.endpoint)} connect close-before-open error=${h.error ?? "<none>"}`
-        ), i(new Error(h.error ?? `IPC transport closed for endpoint ${this.endpoint}`)));
-      }), c = () => {
-        clearTimeout(r), o(), a();
+    }
+    await this.ensureTauriListeners();
+    await new Promise(async (resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(new Error(`IPC connect timed out for endpoint ${this.endpoint}`));
+      }, CONNECT_TIMEOUT_MS);
+      const offOpen = this.on("open", () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve();
+      });
+      const offClose = this.on("close", (payload) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (!isMissingEndpointError(payload.error)) {
+          console.error(
+            `${logPrefix(this.sessionId, this.endpoint)} connect close-before-open error=${payload.error ?? "<none>"}`
+          );
+        }
+        reject(new Error(payload.error ?? `IPC transport closed for endpoint ${this.endpoint}`));
+      });
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        offOpen();
+        offClose();
       };
       try {
-        await g("pack_ipc_transport_connect", {
+        await invoke("pack_ipc_transport_connect", {
           sessionId: this.sessionId,
           endpoint: this.endpoint,
-          initialDataBase64: t ? D(U(t)) : null
+          initialDataBase64: initialData ? toBase64(normalizeBinary(initialData)) : null
         });
-      } catch (h) {
-        if (n)
+      } catch (error) {
+        if (settled) {
           return;
-        n = !0, c(), C(h) || console.error(`${S(this.sessionId, this.endpoint)} invoke connect failed`, h), i(h);
+        }
+        settled = true;
+        cleanup();
+        if (!isMissingEndpointError(error)) {
+          console.error(`${logPrefix(this.sessionId, this.endpoint)} invoke connect failed`, error);
+        }
+        reject(error);
       }
     });
   }
-  async write(t) {
-    const e = U(t);
+  async write(data) {
+    const bytes = normalizeBinary(data);
     try {
-      await g("pack_ipc_transport_write", {
+      await invoke("pack_ipc_transport_write", {
         sessionId: this.sessionId,
-        dataBase64: D(e)
+        dataBase64: toBase64(bytes)
       });
-    } catch (i) {
-      this.connected = !1;
-      const n = i instanceof Error ? i.message : typeof i == "string" ? i : "IPC transport write failed";
-      throw console.error(`${S(this.sessionId, this.endpoint)} write failed error=${n}`, i), this.emit("close", {
+    } catch (error) {
+      this.connected = false;
+      const message = error instanceof Error ? error.message : typeof error === "string" ? error : "IPC transport write failed";
+      console.error(`${logPrefix(this.sessionId, this.endpoint)} write failed error=${message}`, error);
+      this.emit("close", {
         sessionId: this.sessionId,
         endpoint: this.endpoint,
-        error: n
-      }), i;
+        error: message
+      });
+      throw error;
     }
   }
-  async send(t) {
-    await this.write(t);
+  async send(data) {
+    await this.write(data);
   }
   async close() {
     try {
-      await g("pack_ipc_transport_disconnect", {
+      await invoke("pack_ipc_transport_disconnect", {
         sessionId: this.sessionId
       });
     } finally {
-      this.connected = !1, this.teardownTauriListeners();
+      this.connected = false;
+      this.teardownTauriListeners();
     }
   }
   async destroy() {
     await this.close();
   }
-  on(t, e) {
-    return this.listeners[t].add(e), () => {
-      this.listeners[t].delete(e);
+  on(eventName, handler) {
+    this.listeners[eventName].add(handler);
+    return () => {
+      this.listeners[eventName].delete(handler);
     };
   }
   async ensureTauriListeners() {
-    return this.tauriListenersReady ? this.tauriListenersReady : (this.tauriListenersReady = (async () => {
+    if (this.tauriListenersReady) {
+      return this.tauriListenersReady;
+    }
+    this.tauriListenersReady = (async () => {
       this.tauriUnlisteners = [
-        await A(et, (t) => {
-          const e = t.payload;
-          e.sessionId === this.sessionId && (this.connected = !0, this.emit("open", e));
+        await listen(OPEN_EVENT, (event) => {
+          const payload = event.payload;
+          if (payload.sessionId !== this.sessionId) {
+            return;
+          }
+          this.connected = true;
+          this.emit("open", payload);
         }),
-        await A(it, (t) => {
-          const e = t.payload;
-          e.sessionId === this.sessionId && this.emit("data", rt(e.dataBase64));
+        await listen(DATA_EVENT, (event) => {
+          const payload = event.payload;
+          if (payload.sessionId !== this.sessionId) {
+            return;
+          }
+          this.emit("data", fromBase64(payload.dataBase64));
         }),
-        await A(nt, (t) => {
-          const e = t.payload;
-          e.sessionId === this.sessionId && (this.connected = !1, C(e.error) || console.error(`${S(this.sessionId, this.endpoint)} event close`, e), this.emit("close", e));
+        await listen(CLOSE_EVENT, (event) => {
+          const payload = event.payload;
+          if (payload.sessionId !== this.sessionId) {
+            return;
+          }
+          this.connected = false;
+          if (!isMissingEndpointError(payload.error)) {
+            console.error(`${logPrefix(this.sessionId, this.endpoint)} event close`, payload);
+          }
+          this.emit("close", payload);
         })
       ];
-    })(), this.tauriListenersReady);
+    })();
+    return this.tauriListenersReady;
   }
   teardownTauriListeners() {
-    for (const t of this.tauriUnlisteners)
+    for (const unlisten of this.tauriUnlisteners) {
       try {
-        t();
+        unlisten();
       } catch {
       }
-    this.tauriUnlisteners = [], this.tauriListenersReady = null;
+    }
+    this.tauriUnlisteners = [];
+    this.tauriListenersReady = null;
   }
-  emit(t, e) {
-    for (const i of this.listeners[t])
-      i(e);
-  }
-}
-const z = async (s) => {
-  const t = String(s ?? "").trim();
-  return t ? g("pack_ipc_transport_endpoint_exists", {
-    endpoint: t
-  }) : !1;
-}, lt = (s) => {
-  if (typeof s != "function")
-    return !1;
-  const t = s;
-  return t._isSignal === !0 && typeof t.set == "function" && typeof t.subscribe == "function";
-}, dt = (s) => {
-  let t = s;
-  const e = /* @__PURE__ */ new Set(), i = (() => t);
-  return i._isSignal = !0, i.set = (n) => {
-    t = n;
-    for (const r of e)
-      r(t);
-  }, i.update = (n) => {
-    i.set(n(t));
-  }, i.subscribe = (n) => (e.add(n), () => e.delete(n)), i;
-}, ht = (s, t) => {
-  const e = [];
-  for (const i of Object.keys(s)) {
-    const n = s[i];
-    lt(n) && e.push(n.subscribe(() => t()));
-  }
-  return () => {
-    for (const i of e)
-      i();
-  };
-}, ut = (s, t) => new Proxy(
-  { payload: t },
-  {
-    get(e, i) {
-      if (typeof i != "string")
-        return;
-      if (i in e)
-        return e[i];
-      const n = s[i];
-      return typeof n == "function" ? n.bind(s) : n;
-    },
-    has(e, i) {
-      return typeof i != "string" ? !1 : i in e || i in s;
+  emit(eventName, payload) {
+    for (const listener of this.listeners[eventName]) {
+      listener(payload);
     }
   }
-), pt = ["src", "href", "poster"], ft = "{{pack-install-path}}/", x = "{{ASSETS}}", Et = (s) => {
-  const t = s.trim();
-  return t.length === 0 || t.startsWith("data:") || t.startsWith("blob:") || t.startsWith("http://") || t.startsWith("https://") || t.startsWith("file:") || t.startsWith("asset:") || t.startsWith("mailto:") || t.startsWith("tel:") || t.startsWith("javascript:") || t.startsWith("//") || t.startsWith("/") || t.startsWith("#");
-}, mt = (s) => {
-  const t = s.trim();
-  if (!t)
+}
+const ipcTransportEndpointExists = async (endpoint) => {
+  const normalized = String(endpoint ?? "").trim();
+  if (!normalized) {
+    return false;
+  }
+  return invoke("pack_ipc_transport_endpoint_exists", {
+    endpoint: normalized
+  });
+};
+const isSignal = (value) => {
+  if (typeof value !== "function") {
+    return false;
+  }
+  const candidate = value;
+  return candidate._isSignal === true && typeof candidate.set === "function" && typeof candidate.subscribe === "function";
+};
+const signal = (initialValue) => {
+  let current = initialValue;
+  const subscribers = /* @__PURE__ */ new Set();
+  const read = (() => current);
+  read._isSignal = true;
+  read.set = (value) => {
+    current = value;
+    for (const subscriber of subscribers) {
+      subscriber(current);
+    }
+  };
+  read.update = (updater) => {
+    read.set(updater(current));
+  };
+  read.subscribe = (subscriber) => {
+    subscribers.add(subscriber);
+    return () => subscribers.delete(subscriber);
+  };
+  return read;
+};
+const bindSignals = (source, onChange) => {
+  const unsubscribers = [];
+  for (const key of Object.keys(source)) {
+    const value = source[key];
+    if (isSignal(value)) {
+      unsubscribers.push(value.subscribe(() => onChange()));
+    }
+  }
+  return () => {
+    for (const unsubscribe of unsubscribers) {
+      unsubscribe();
+    }
+  };
+};
+const createScope = (instance, payload) => {
+  return new Proxy(
+    { payload },
+    {
+      get(target, property) {
+        if (typeof property !== "string") {
+          return void 0;
+        }
+        if (property in target) {
+          return target[property];
+        }
+        const value = instance[property];
+        if (typeof value === "function") {
+          return value.bind(instance);
+        }
+        return value;
+      },
+      has(target, property) {
+        if (typeof property !== "string") {
+          return false;
+        }
+        return property in target || property in instance;
+      }
+    }
+  );
+};
+const RELATIVE_URL_ATTRIBUTES = ["src", "href", "poster"];
+const PACK_INSTALL_PATH_PLACEHOLDER = "{{pack-install-path}}/";
+const ASSETS_PLACEHOLDER = "{{ASSETS}}";
+const isExternalAssetUrl = (value) => {
+  const trimmed = value.trim();
+  return trimmed.length === 0 || trimmed.startsWith("data:") || trimmed.startsWith("blob:") || trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("file:") || trimmed.startsWith("asset:") || trimmed.startsWith("mailto:") || trimmed.startsWith("tel:") || trimmed.startsWith("javascript:") || trimmed.startsWith("//") || trimmed.startsWith("/") || trimmed.startsWith("#");
+};
+const extractWidgetRelativePath = (value) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return null;
-  if (!Et(t))
-    return t.replace(/^\.\/+/, "").replace(/^\/+/, "");
-  if (t.startsWith("http://") || t.startsWith("https://"))
+  }
+  if (!isExternalAssetUrl(trimmed)) {
+    return trimmed.replace(/^\.\/+/, "").replace(/^\/+/, "");
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
     try {
-      const e = new URL(t);
-      if (e.origin === window.location.origin)
-        return `${e.pathname}${e.search}${e.hash}`.replace(/^\/+/, "");
+      const url = new URL(trimmed);
+      if (url.origin === window.location.origin) {
+        return `${url.pathname}${url.search}${url.hash}`.replace(/^\/+/, "");
+      }
     } catch {
       return null;
     }
+  }
   return null;
-}, Tt = (s, t) => {
-  const e = s.replaceAll("\\", "/").replace(/\/+$/, ""), i = `${e}/${t.trim()}`, n = i.split("/"), r = [];
-  for (const o of n) {
-    if (!o || o === ".") {
-      r.length === 0 && i.startsWith("/") && r.push("");
+};
+const normalizeJoinedAssetPath = (widgetDirectory, relativePath) => {
+  const normalizedBase = widgetDirectory.replaceAll("\\", "/").replace(/\/+$/, "");
+  const combined = `${normalizedBase}/${relativePath.trim()}`;
+  const segments = combined.split("/");
+  const resolved = [];
+  for (const segment of segments) {
+    if (!segment || segment === ".") {
+      if (resolved.length === 0 && combined.startsWith("/")) {
+        resolved.push("");
+      }
       continue;
     }
-    if (o === "..") {
-      (r.length > 1 || r.length === 1 && r[0] !== "") && r.pop();
+    if (segment === "..") {
+      if (resolved.length > 1 || resolved.length === 1 && resolved[0] !== "") {
+        resolved.pop();
+      }
       continue;
     }
-    r.push(o);
+    resolved.push(segment);
   }
-  return r.join("/") || e;
-}, I = (s, t) => {
-  const e = mt(t);
-  if (!s || !e)
-    return t;
+  return resolved.join("/") || normalizedBase;
+};
+const resolveAssetUrl = (widgetDirectory, value) => {
+  const relativePath = extractWidgetRelativePath(value);
+  if (!widgetDirectory || !relativePath) {
+    return value;
+  }
   try {
-    return H(Tt(s, e));
+    return convertFileSrc(normalizeJoinedAssetPath(widgetDirectory, relativePath));
   } catch {
-    return t;
-  }
-}, _t = (s) => {
-  const t = s.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  if (!t)
-    return "";
-  try {
-    return H(t);
-  } catch {
-    return t;
-  }
-}, gt = (s, t) => s.split(",").map((e) => {
-  const i = e.trim();
-  if (!i)
-    return i;
-  const [n, r] = i.split(/\s+/, 2), o = I(t, n);
-  return r ? `${o} ${r}` : o;
-}).join(", "), St = (s, t) => s.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (e, i, n) => {
-  const r = I(t, n);
-  return r === n ? e : `url("${r}")`;
-}), b = (s, t) => {
-  for (const n of pt) {
-    const r = s.getAttribute(n);
-    if (!r)
-      continue;
-    const o = I(t, r);
-    o !== r && s.setAttribute(n, o);
-  }
-  const e = s.getAttribute("srcset");
-  if (e) {
-    const n = gt(e, t);
-    n !== e && s.setAttribute("srcset", n);
-  }
-  const i = s.getAttribute("style");
-  if (i) {
-    const n = St(i, t);
-    n !== i && s.setAttribute("style", n);
-  }
-}, V = (s, t) => {
-  if (t) {
-    s instanceof Element && b(s, t);
-    for (const e of Array.from(s.querySelectorAll("*")))
-      b(e, t);
-  }
-}, B = (s, t) => {
-  if (!t)
-    return s;
-  let e = s;
-  const i = _t(t);
-  return i && e.includes(x) && (e = e.replaceAll(x, i)), e.includes(ft) ? e.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (n, r) => I(t, r)) : e;
-}, It = (s, t) => class {
-  constructor({
-    mount: i,
-    payload: n,
-    setLoading: r
-  }) {
-    this.cleanups = [], this.widgetDirectory = "", this.mount = i, this.payload = n ?? {}, this.setLoading = typeof r == "function" ? r : (() => {
-    }), this.assetObserver = new MutationObserver((o) => {
-      if (this.widgetDirectory)
-        for (const a of o) {
-          if (a.type === "attributes" && a.target instanceof Element) {
-            b(a.target, this.widgetDirectory);
-            continue;
-          }
-          for (const c of Array.from(a.addedNodes))
-            c instanceof Element && V(c, this.widgetDirectory);
-        }
-    }), this.logic = new s({
-      mount: i,
-      payload: this.payload,
-      setLoading: (o) => this.setLoading(!!o),
-      on: (o, a, c) => this.on(o, a, c)
-    }), this.cleanupSignalSubscriptions = ht(this.logic, () => this.render()), this.assetObserver.observe(this.mount, {
-      subtree: !0,
-      childList: !0,
-      attributes: !0,
-      attributeFilter: ["src", "href", "poster", "srcset", "style"]
-    });
-  }
-  onInit() {
-    this.render(), this.logic.onInit?.();
-  }
-  onUpdate(i) {
-    this.payload = i ?? {}, this.logic.onUpdate?.(this.payload), this.render();
-  }
-  onDestroy() {
-    for (this.cleanupSignalSubscriptions(); this.cleanups.length > 0; )
-      this.cleanups.pop()?.();
-    this.assetObserver.disconnect(), this.logic.onDestroy?.(), this.mount.innerHTML = "";
-  }
-  render() {
-    const i = ut(this.logic, this.payload);
-    this.widgetDirectory = String(
-      this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
-    ).trim();
-    const n = B(t.template, this.widgetDirectory), r = B(t.styles, this.widgetDirectory), a = X(n)(i);
-    this.mount.innerHTML = `<style>${r}</style>${a}`, this.mount.setAttribute("data-displayduck-render-empty", a.trim().length === 0 ? "true" : "false"), V(this.mount, this.widgetDirectory), this.logic.afterRender?.();
-  }
-  on(i, n, r) {
-    const o = (c) => {
-      const u = c.target?.closest(n);
-      !u || !this.mount.contains(u) || r(c, u);
-    };
-    this.mount.addEventListener(i, o);
-    const a = () => this.mount.removeEventListener(i, o);
-    return this.cleanups.push(a), a;
+    return value;
   }
 };
-class $ {
+const resolveAssetsBaseUrl = (widgetDirectory) => {
+  const normalizedDirectory = widgetDirectory.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  if (!normalizedDirectory) {
+    return "";
+  }
+  try {
+    return convertFileSrc(normalizedDirectory);
+  } catch {
+    return normalizedDirectory;
+  }
+};
+const rewriteSrcset = (value, widgetDirectory) => {
+  return value.split(",").map((entry) => {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return trimmed;
+    }
+    const [url, descriptor] = trimmed.split(/\s+/, 2);
+    const nextUrl = resolveAssetUrl(widgetDirectory, url);
+    return descriptor ? `${nextUrl} ${descriptor}` : nextUrl;
+  }).join(", ");
+};
+const rewriteInlineStyleUrls = (value, widgetDirectory) => {
+  return value.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, quote, urlValue) => {
+    const nextUrl = resolveAssetUrl(widgetDirectory, urlValue);
+    if (nextUrl === urlValue) {
+      return full;
+    }
+    return `url("${nextUrl}")`;
+  });
+};
+const rewriteElementAssetUrls = (element, widgetDirectory) => {
+  for (const attribute of RELATIVE_URL_ATTRIBUTES) {
+    const currentValue = element.getAttribute(attribute);
+    if (!currentValue) {
+      continue;
+    }
+    const nextValue = resolveAssetUrl(widgetDirectory, currentValue);
+    if (nextValue !== currentValue) {
+      element.setAttribute(attribute, nextValue);
+    }
+  }
+  const currentSrcset = element.getAttribute("srcset");
+  if (currentSrcset) {
+    const nextSrcset = rewriteSrcset(currentSrcset, widgetDirectory);
+    if (nextSrcset !== currentSrcset) {
+      element.setAttribute("srcset", nextSrcset);
+    }
+  }
+  const currentStyle = element.getAttribute("style");
+  if (currentStyle) {
+    const nextStyle = rewriteInlineStyleUrls(currentStyle, widgetDirectory);
+    if (nextStyle !== currentStyle) {
+      element.setAttribute("style", nextStyle);
+    }
+  }
+};
+const rewriteTreeAssetUrls = (root, widgetDirectory) => {
+  if (!widgetDirectory) {
+    return;
+  }
+  if (root instanceof Element) {
+    rewriteElementAssetUrls(root, widgetDirectory);
+  }
+  for (const element of Array.from(root.querySelectorAll("*"))) {
+    rewriteElementAssetUrls(element, widgetDirectory);
+  }
+};
+const rewriteInstallPathPlaceholders = (input, widgetDirectory) => {
+  if (!widgetDirectory) {
+    return input;
+  }
+  let output = input;
+  const assetsBaseUrl = resolveAssetsBaseUrl(widgetDirectory);
+  if (assetsBaseUrl && output.includes(ASSETS_PLACEHOLDER)) {
+    output = output.replaceAll(ASSETS_PLACEHOLDER, assetsBaseUrl);
+  }
+  if (!output.includes(PACK_INSTALL_PATH_PLACEHOLDER)) {
+    return output;
+  }
+  return output.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (full, relativePath) => {
+    return resolveAssetUrl(widgetDirectory, relativePath);
+  });
+};
+const createWidgetClass = (WidgetImpl, options) => {
+  return class RuntimeWidget {
+    constructor({
+      mount,
+      payload,
+      setLoading
+    }) {
+      this.cleanups = [];
+      this.widgetDirectory = "";
+      this.mount = mount;
+      this.payload = payload ?? {};
+      this.setLoading = typeof setLoading === "function" ? setLoading : (() => {
+      });
+      this.assetObserver = new MutationObserver((mutations) => {
+        if (!this.widgetDirectory) {
+          return;
+        }
+        for (const mutation of mutations) {
+          if (mutation.type === "attributes" && mutation.target instanceof Element) {
+            rewriteElementAssetUrls(mutation.target, this.widgetDirectory);
+            continue;
+          }
+          for (const node of Array.from(mutation.addedNodes)) {
+            if (node instanceof Element) {
+              rewriteTreeAssetUrls(node, this.widgetDirectory);
+            }
+          }
+        }
+      });
+      this.logic = new WidgetImpl({
+        mount,
+        payload: this.payload,
+        setLoading: (loading) => this.setLoading(Boolean(loading)),
+        on: (eventName, selector, handler) => this.on(eventName, selector, handler)
+      });
+      this.cleanupSignalSubscriptions = bindSignals(this.logic, () => this.render());
+      this.assetObserver.observe(this.mount, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["src", "href", "poster", "srcset", "style"]
+      });
+    }
+    onInit() {
+      this.render();
+      this.logic.onInit?.();
+    }
+    onUpdate(payload) {
+      this.payload = payload ?? {};
+      this.logic.onUpdate?.(this.payload);
+      this.render();
+    }
+    onDestroy() {
+      this.cleanupSignalSubscriptions();
+      while (this.cleanups.length > 0) {
+        const cleanup = this.cleanups.pop();
+        cleanup?.();
+      }
+      this.assetObserver.disconnect();
+      this.logic.onDestroy?.();
+      this.mount.innerHTML = "";
+    }
+    render() {
+      const scope = createScope(this.logic, this.payload);
+      this.widgetDirectory = String(
+        this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
+      ).trim();
+      const finalTemplate = rewriteInstallPathPlaceholders(options.template, this.widgetDirectory);
+      const finalStyles = rewriteInstallPathPlaceholders(options.styles, this.widgetDirectory);
+      const renderTemplate = createTemplateRenderer(finalTemplate);
+      const html = renderTemplate(scope);
+      this.mount.innerHTML = `<style>${finalStyles}</style>${html}`;
+      this.mount.setAttribute("data-displayduck-render-empty", html.trim().length === 0 ? "true" : "false");
+      rewriteTreeAssetUrls(this.mount, this.widgetDirectory);
+      this.logic.afterRender?.();
+    }
+    on(eventName, selector, handler) {
+      const listener = (event) => {
+        const target = event.target;
+        const matched = target?.closest(selector);
+        if (!matched || !this.mount.contains(matched)) {
+          return;
+        }
+        handler(event, matched);
+      };
+      this.mount.addEventListener(eventName, listener);
+      const cleanup = () => this.mount.removeEventListener(eventName, listener);
+      this.cleanups.push(cleanup);
+      return cleanup;
+    }
+  };
+};
+class EventEmitter {
   constructor() {
     this.listenersMap = /* @__PURE__ */ new Map();
   }
-  addListener(t, e) {
-    return this.on(t, e);
+  addListener(eventName, listener) {
+    return this.on(eventName, listener);
   }
-  on(t, e) {
-    const i = this.listenersMap.get(t) ?? [];
-    return i.push({ listener: e, once: !1 }), this.listenersMap.set(t, i), this;
+  on(eventName, listener) {
+    const listeners = this.listenersMap.get(eventName) ?? [];
+    listeners.push({ listener, once: false });
+    this.listenersMap.set(eventName, listeners);
+    return this;
   }
-  once(t, e) {
-    const i = this.listenersMap.get(t) ?? [];
-    return i.push({ listener: e, once: !0 }), this.listenersMap.set(t, i), this;
+  once(eventName, listener) {
+    const listeners = this.listenersMap.get(eventName) ?? [];
+    listeners.push({ listener, once: true });
+    this.listenersMap.set(eventName, listeners);
+    return this;
   }
-  off(t, e) {
-    return this.removeListener(t, e);
+  off(eventName, listener) {
+    return this.removeListener(eventName, listener);
   }
-  removeListener(t, e) {
-    const i = this.listenersMap.get(t);
-    if (!i?.length)
+  removeListener(eventName, listener) {
+    const listeners = this.listenersMap.get(eventName);
+    if (!listeners?.length) {
       return this;
-    const n = i.filter((r) => r.listener !== e);
-    return n.length > 0 ? this.listenersMap.set(t, n) : this.listenersMap.delete(t), this;
+    }
+    const nextListeners = listeners.filter((entry) => entry.listener !== listener);
+    if (nextListeners.length > 0) {
+      this.listenersMap.set(eventName, nextListeners);
+    } else {
+      this.listenersMap.delete(eventName);
+    }
+    return this;
   }
-  removeAllListeners(t) {
-    return t === void 0 ? (this.listenersMap.clear(), this) : (this.listenersMap.delete(t), this);
+  removeAllListeners(eventName) {
+    if (eventName === void 0) {
+      this.listenersMap.clear();
+      return this;
+    }
+    this.listenersMap.delete(eventName);
+    return this;
   }
-  emit(t, ...e) {
-    const i = this.listenersMap.get(t);
-    if (!i?.length)
-      return !1;
-    const n = [...i];
-    for (const r of n)
-      r.listener(...e), r.once && this.removeListener(t, r.listener);
-    return !0;
+  emit(eventName, ...args) {
+    const listeners = this.listenersMap.get(eventName);
+    if (!listeners?.length) {
+      return false;
+    }
+    const snapshot = [...listeners];
+    for (const entry of snapshot) {
+      entry.listener(...args);
+      if (entry.once) {
+        this.removeListener(eventName, entry.listener);
+      }
+    }
+    return true;
   }
-  listeners(t) {
-    return (this.listenersMap.get(t) ?? []).map((e) => e.listener);
+  listeners(eventName) {
+    return (this.listenersMap.get(eventName) ?? []).map((entry) => entry.listener);
   }
-  listenerCount(t) {
-    return this.listeners(t).length;
+  listenerCount(eventName) {
+    return this.listeners(eventName).length;
   }
 }
-const Y = () => {
-  if (typeof crypto < "u" && typeof crypto.randomUUID == "function")
+const uuid = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
-  let s = "";
-  for (let t = 0; t < 32; t += 1) {
-    (t === 8 || t === 12 || t === 16 || t === 20) && (s += "-");
-    let e;
-    if (t === 12)
-      e = 4;
-    else {
-      const i = Math.random() * 16 | 0;
-      e = t === 16 ? i & 3 | 8 : i;
-    }
-    s += e.toString(16);
   }
-  return s;
-}, _ = {
+  let value = "";
+  for (let index = 0; index < 32; index += 1) {
+    if (index === 8 || index === 12 || index === 16 || index === 20) {
+      value += "-";
+    }
+    let nibble;
+    if (index === 12) {
+      nibble = 4;
+    } else {
+      const random = Math.random() * 16 | 0;
+      nibble = index === 16 ? random & 3 | 8 : random;
+    }
+    value += nibble.toString(16);
+  }
+  return value;
+};
+const OPCodes = {
   HANDSHAKE: 0,
   FRAME: 1,
   CLOSE: 2,
   PING: 3,
   PONG: 4
-}, M = 3, yt = 250, At = new TextEncoder(), Ct = new TextDecoder(), vt = () => (globalThis.navigator?.platform ?? "").toLowerCase().includes("win") ? "win32" : "unix", K = (s) => {
-  const t = Array.isArray(s.options?.ipcEndpoints) ? s.options.ipcEndpoints.filter((n) => typeof n == "string" && n.trim().length > 0) : [];
-  if (t.length > 0)
-    return t;
-  const e = vt(), i = [];
-  for (const n of ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"])
-    for (let r = 0; r < 10; r++)
-      e === "win32" ? i.push(`\\\\.\\pipe\\${n}-${r}`) : i.push(`/tmp/${n}-${r}`);
-  return i;
-}, wt = (s) => Array.isArray(s.options?.ipcEndpoints) && s.options.ipcEndpoints.some((t) => typeof t == "string" && t.trim().length > 0), Rt = async (s) => {
-  const t = K(s);
-  return (await Promise.all(
-    t.map(async (i) => ({
-      endpoint: i,
-      exists: await z(i).catch(() => !1)
-    }))
-  )).filter((i) => i.exists).map((i) => i.endpoint);
-}, Ot = (s, t) => {
-  const e = new Uint8Array(s.length + t.length);
-  return e.set(s, 0), e.set(t, s.length), e;
-}, bt = (s) => new Promise((t) => {
-  setTimeout(t, s);
-}), G = (s) => {
-  if (s instanceof Error)
-    return s;
-  if (s && typeof s == "object") {
-    const t = s, e = String(t.message ?? "").trim(), i = typeof t.code == "number" || typeof t.code == "string" ? String(t.code).trim() : "";
-    if (e || i) {
-      const n = new Error(
-        [e, i ? `(code ${i})` : ""].filter(Boolean).join(" ")
-      );
-      return i && (n.code = i), n;
+};
+const CONNECT_ATTEMPTS = 3;
+const CONNECT_RETRY_DELAY_MS = 250;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const getPlatform = () => {
+  const platform = (globalThis.navigator?.platform ?? "").toLowerCase();
+  if (platform.includes("win")) {
+    return "win32";
+  }
+  return "unix";
+};
+const getCandidateEndpoints = (client) => {
+  const custom = Array.isArray(client.options?.ipcEndpoints) ? client.options.ipcEndpoints.filter((value) => typeof value === "string" && value.trim().length > 0) : [];
+  if (custom.length > 0) {
+    return custom;
+  }
+  const platform = getPlatform();
+  const candidates = [];
+  for (const build of ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"]) {
+    for (let i = 0; i < 10; i++) {
+      if (platform === "win32") {
+        candidates.push(`\\\\.\\pipe\\${build}-${i}`);
+      } else {
+        candidates.push(`/tmp/${build}-${i}`);
+      }
     }
   }
-  return new Error(String(s ?? "connection closed"));
-}, v = (s, t) => {
-  const e = At.encode(JSON.stringify(t)), i = new Uint8Array(8 + e.length), n = new DataView(i.buffer);
-  return n.setInt32(0, s, !0), n.setInt32(4, e.length, !0), i.set(e, 8), i;
+  return candidates;
 };
-class Nt extends $ {
-  constructor(t) {
-    super(), this.socket = null, this.buffer = new Uint8Array(0), this.connectPromise = null, this.client = t;
+const hasCustomEndpoints = (client) => {
+  return Array.isArray(client.options?.ipcEndpoints) && client.options.ipcEndpoints.some((value) => typeof value === "string" && value.trim().length > 0);
+};
+const getReachableEndpoints = async (client) => {
+  const candidates = getCandidateEndpoints(client);
+  const checks = await Promise.all(
+    candidates.map(async (endpoint) => ({
+      endpoint,
+      exists: await ipcTransportEndpointExists(endpoint).catch(() => false)
+    }))
+  );
+  return checks.filter((entry) => entry.exists).map((entry) => entry.endpoint);
+};
+const concatBytes = (left, right) => {
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+};
+const sleep = (ms) => new Promise((resolve) => {
+  setTimeout(resolve, ms);
+});
+const toTransportError = (payload) => {
+  if (payload instanceof Error) {
+    return payload;
+  }
+  if (payload && typeof payload === "object") {
+    const record = payload;
+    const message = String(record.message ?? "").trim();
+    const code = typeof record.code === "number" || typeof record.code === "string" ? String(record.code).trim() : "";
+    if (message || code) {
+      const error = new Error(
+        [message, code ? `(code ${code})` : ""].filter(Boolean).join(" ")
+      );
+      if (code) {
+        error.code = code;
+      }
+      return error;
+    }
+  }
+  return new Error(String(payload ?? "connection closed"));
+};
+const encode = (op, data) => {
+  const payload = encoder.encode(JSON.stringify(data));
+  const packet = new Uint8Array(8 + payload.length);
+  const view = new DataView(packet.buffer);
+  view.setInt32(0, op, true);
+  view.setInt32(4, payload.length, true);
+  packet.set(payload, 8);
+  return packet;
+};
+class IPCTransport extends EventEmitter {
+  constructor(client) {
+    super();
+    this.socket = null;
+    this.buffer = new Uint8Array(0);
+    this.connectPromise = null;
+    this.client = client;
   }
   async connect() {
-    if (!this.socket)
-      return this.connectPromise ? this.connectPromise : (this.connectPromise = this.connectInternal().finally(() => {
-        this.connectPromise = null;
-      }), this.connectPromise);
+    if (this.socket) {
+      return;
+    }
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+    this.connectPromise = this.connectInternal().finally(() => {
+      this.connectPromise = null;
+    });
+    return this.connectPromise;
   }
-  send(t, e = _.FRAME) {
-    if (!this.socket)
+  send(data, op = OPCodes.FRAME) {
+    if (!this.socket) {
       throw new Error("IPC transport is not connected");
-    const i = this.socket;
-    i.write(v(e, t)).catch((n) => {
-      this.socket === i && (this.socket = null), this.emit("close", n instanceof Error ? n : new Error(String(n)));
+    }
+    const socket = this.socket;
+    void socket.write(encode(op, data)).catch((error) => {
+      if (this.socket === socket) {
+        this.socket = null;
+      }
+      this.emit("close", error instanceof Error ? error : new Error(String(error)));
     });
   }
   async close() {
-    if (this.connectPromise = null, !this.socket) {
+    this.connectPromise = null;
+    if (!this.socket) {
       this.buffer = new Uint8Array(0);
       return;
     }
-    const t = this.socket;
-    this.socket = null, this.buffer = new Uint8Array(0), await t.write(v(_.CLOSE, {})).catch(() => {
-    }), await t.close();
+    const socket = this.socket;
+    this.socket = null;
+    this.buffer = new Uint8Array(0);
+    await socket.write(encode(OPCodes.CLOSE, {})).catch(() => void 0);
+    await socket.close();
   }
   ping() {
-    this.send(Y(), _.PING);
+    this.send(uuid(), OPCodes.PING);
   }
-  decode(t) {
-    for (this.buffer = Ot(this.buffer, t); this.buffer.length >= 8; ) {
-      const e = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength), i = e.getInt32(0, !0), r = 8 + e.getInt32(4, !0);
-      if (this.buffer.length < r)
+  decode(chunk) {
+    this.buffer = concatBytes(this.buffer, chunk);
+    while (this.buffer.length >= 8) {
+      const view = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength);
+      const op = view.getInt32(0, true);
+      const length = view.getInt32(4, true);
+      const totalLength = 8 + length;
+      if (this.buffer.length < totalLength) {
         return;
-      const o = this.buffer.slice(8, r);
-      this.buffer = this.buffer.slice(r);
-      let a = null;
+      }
+      const payload = this.buffer.slice(8, totalLength);
+      this.buffer = this.buffer.slice(totalLength);
+      let data = null;
       try {
-        a = JSON.parse(Ct.decode(o));
+        data = JSON.parse(decoder.decode(payload));
       } catch {
         continue;
       }
-      if (i === _.PING) {
-        this.send(a, _.PONG);
+      if (op === OPCodes.PING) {
+        this.send(data, OPCodes.PONG);
         continue;
       }
-      if (i === _.FRAME) {
-        if (!a || typeof a != "object")
+      if (op === OPCodes.FRAME) {
+        if (!data || typeof data !== "object") {
           continue;
-        this.emit("message", a);
+        }
+        this.emit("message", data);
         continue;
       }
-      i === _.CLOSE && this.emit("close", G(a));
+      if (op === OPCodes.CLOSE) {
+        this.emit("close", toTransportError(data));
+      }
     }
   }
   async connectInternal() {
     this.buffer = new Uint8Array(0);
-    const t = K(this.client), e = await Rt(this.client), i = e.length > 0 ? e : wt(this.client) ? t : [];
-    let n = null;
-    if (i.length === 0)
+    const candidateEndpoints = getCandidateEndpoints(this.client);
+    const reachableEndpoints = await getReachableEndpoints(this.client);
+    const endpoints = reachableEndpoints.length > 0 ? reachableEndpoints : hasCustomEndpoints(this.client) ? candidateEndpoints : [];
+    let lastError = null;
+    if (endpoints.length === 0) {
       throw new Error("Discord IPC endpoint is not available.");
-    for (let r = 0; r < M; r += 1) {
-      for (const o of i) {
-        const a = new ct({ endpoint: o }), c = a.on("open", () => {
+    }
+    for (let attempt = 0; attempt < CONNECT_ATTEMPTS; attempt += 1) {
+      for (const endpoint of endpoints) {
+        const transport = new IpcTransport({ endpoint });
+        const unbindOpen = transport.on("open", () => {
           this.emit("open");
-        }), h = a.on("data", (d) => {
-          this.decode(d);
-        }), u = a.on("close", (d) => {
-          this.socket === a && (this.socket = null), this.buffer = new Uint8Array(0), this.emit("close", d.error ? new Error(d.error) : G(d));
+        });
+        const unbindData = transport.on("data", (chunk) => {
+          this.decode(chunk);
+        });
+        const unbindClose = transport.on("close", (payload) => {
+          if (this.socket === transport) {
+            this.socket = null;
+          }
+          this.buffer = new Uint8Array(0);
+          this.emit("close", payload.error ? new Error(payload.error) : toTransportError(payload));
         });
         try {
-          await a.connectWithInitialWrite(
-            v(_.HANDSHAKE, {
+          await transport.connectWithInitialWrite(
+            encode(OPCodes.HANDSHAKE, {
               v: 1,
               client_id: this.client.clientId
             })
-          ), this.socket = a;
+          );
+          this.socket = transport;
           return;
-        } catch (d) {
-          c(), h(), u(), await a.close().catch(() => {
-          }), n = d;
+        } catch (error) {
+          unbindOpen();
+          unbindData();
+          unbindClose();
+          await transport.close().catch(() => void 0);
+          lastError = error;
         }
       }
-      r < M - 1 && await bt(yt * (r + 1));
+      if (attempt < CONNECT_ATTEMPTS - 1) {
+        await sleep(CONNECT_RETRY_DELAY_MS * (attempt + 1));
+      }
     }
-    throw e.length > 0 ? n instanceof Error ? n : new Error("Discord IPC endpoint is available, but the connection did not complete.") : n instanceof Error ? n : new Error("Could not connect");
+    if (reachableEndpoints.length > 0) {
+      throw lastError instanceof Error ? lastError : new Error("Discord IPC endpoint is available, but the connection did not complete.");
+    }
+    throw lastError instanceof Error ? lastError : new Error("Could not connect");
   }
 }
-const F = (s) => {
-  const t = {};
-  for (const e of s)
-    t[e] = e;
-  return t;
-}, l = F([
+const keyMirror = (values) => {
+  const result = {};
+  for (const value of values) {
+    result[value] = value;
+  }
+  return result;
+};
+const RPCCommands = keyMirror([
   "DISPATCH",
   "AUTHORIZE",
   "AUTHENTICATE",
@@ -697,7 +1063,8 @@ const F = (s) => {
   "TOGGLE_SCREENSHARE",
   "GET_SOUNDBOARD_SOUNDS",
   "PLAY_SOUNDBOARD_SOUND"
-]), f = F([
+]);
+const RPCEvents = keyMirror([
   "CURRENT_USER_UPDATE",
   "GUILD_STATUS",
   "GUILD_CREATE",
@@ -736,355 +1103,590 @@ const F = (s) => {
   "USER_ACHIEVEMENT_UPDATE",
   "READY",
   "ERROR"
-]), kt = {
+]);
+const RelationshipTypes = {
   NONE: 0,
   FRIEND: 1,
   BLOCKED: 2,
   PENDING_INCOMING: 3,
   PENDING_OUTGOING: 4,
   IMPLICIT: 5
-}, Lt = (s, t) => `${s}${JSON.stringify(t)}`, q = (s, t) => {
-  const e = typeof t.pid == "number" ? t.pid : void 0;
-  return typeof e == "number" ? e : typeof s.pid == "number" ? s.pid : 0;
 };
-class Pt extends $ {
-  constructor(t = {}) {
-    super(), this.accessToken = null, this.refreshToken = null, this.clientId = null, this.application = null, this.user = null, this.endpoint = "https://discord.com/api", this._expecting = /* @__PURE__ */ new Map(), this._subscriptions = /* @__PURE__ */ new Map(), this.options = t, this.transport = new Nt(this), this.transport.on("message", this._onRpcMessage.bind(this)), this.transport.on("close", (e) => {
-      this._expecting.forEach((i) => {
-        i.reject(e instanceof Error ? e : new Error("connection closed"));
-      }), this._expecting.clear(), this._connectPromise = void 0, this.emit("disconnected", e instanceof Error ? e : new Error("connection closed"));
-    });
+const subKey = (event, args) => {
+  return `${event}${JSON.stringify(args)}`;
+};
+const getProcessId = (options, args) => {
+  const explicitPid = typeof args.pid === "number" ? args.pid : void 0;
+  if (typeof explicitPid === "number") {
+    return explicitPid;
   }
-  on(t, e) {
-    return super.on(t, e);
+  return typeof options.pid === "number" ? options.pid : 0;
+};
+const createFormBody = (values) => {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+    body.set(key, trimmed);
   }
-  off(t, e) {
-    return super.off(t, e);
+  return body;
+};
+const readApiErrorMessage = (body) => {
+  if (!body || typeof body !== "object") {
+    return "";
   }
-  once(t, e) {
-    return super.once(t, e);
+  const error = "error" in body && typeof body.error === "string" ? body.error : "";
+  const description = "error_description" in body && typeof body.error_description === "string" ? body.error_description : "";
+  return [error, description].filter(Boolean).join(": ");
+};
+const toBase64Url = (bytes) => {
+  let binary = "";
+  for (const value of bytes) {
+    binary += String.fromCharCode(value);
   }
-  emit(t, ...e) {
-    return super.emit(t, ...e);
-  }
-  async fetch(t, e, { data: i, query: n } = {}) {
-    const r = n ? `?${new URLSearchParams(n).toString()}` : "", o = {};
-    return typeof this.accessToken == "string" && this.accessToken.trim().length > 0 && (o.Authorization = `Bearer ${this.accessToken}`), fetch(`${this.endpoint}${e}${r}`, {
-      method: t,
-      body: i,
-      headers: o
-    }).then(async (a) => {
-      const c = await a.json();
-      if (!a.ok) {
-        const h = new Error(a.status.toString());
-        throw h.body = c, h;
-      }
-      return c;
-    });
-  }
-  connect(t) {
-    return this._connectPromise && this.clientId === t ? this._connectPromise : (this.clientId && this.clientId !== t && (this.destroy().catch(() => {
-    }), this._connectPromise = void 0), this.transport.socket || (this._connectPromise = void 0), this._connectPromise = new Promise((e, i) => {
-      this.clientId = t;
-      const n = () => {
-        o(), e(this);
-      }, r = (c) => {
-        o(), i(c instanceof Error ? c : new Error("connection closed"));
-      }, o = () => {
-        clearTimeout(a), this.off("connected", n), this.off("disconnected", r);
-      }, a = setTimeout(() => {
-        o(), i(new Error("RPC_CONNECTION_TIMEOUT"));
-      }, 1e4);
-      this.on("connected", n), this.on("disconnected", r), this.transport.connect().catch((c) => {
-        o(), i(c);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+};
+const createPkceVerifier = () => {
+  const bytes = new Uint8Array(48);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
+};
+const createPkceChallenge = async (verifier) => {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return toBase64Url(new Uint8Array(digest));
+};
+class Client extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    this.accessToken = null;
+    this.refreshToken = null;
+    this.clientId = null;
+    this.application = null;
+    this.user = null;
+    this.endpoint = "https://discord.com/api/v10";
+    this._expecting = /* @__PURE__ */ new Map();
+    this._subscriptions = /* @__PURE__ */ new Map();
+    this.options = options;
+    this.transport = new IPCTransport(this);
+    this.transport.on("message", this._onRpcMessage.bind(this));
+    this.transport.on("close", (error) => {
+      this._expecting.forEach((entry) => {
+        entry.reject(error instanceof Error ? error : new Error("connection closed"));
       });
-    }).catch((e) => {
-      throw this._connectPromise = void 0, e;
-    }), this._connectPromise);
+      this._expecting.clear();
+      this._connectPromise = void 0;
+      this.emit("disconnected", error instanceof Error ? error : new Error("connection closed"));
+    });
   }
-  async login(t) {
-    if (await this.connect(t.clientId), !t.scopes)
-      return this.emit("ready"), this;
-    if (t.refreshToken) {
-      const e = await this.refreshOAuthToken(t);
-      e !== null ? (t.accessToken = e.access_token, t.refreshToken = e.refresh_token, this.accessToken = e.access_token, this.refreshToken = e.refresh_token) : (t.accessToken = void 0, t.refreshToken = void 0);
-    }
-    if (!t.accessToken || !t.refreshToken) {
-      const e = await this.authorize(t);
-      t.accessToken = e.access_token, t.refreshToken = e.refresh_token, this.accessToken = e.access_token, this.refreshToken = e.refresh_token;
-    }
-    return this.authenticate(t);
+  on(eventName, listener) {
+    return super.on(eventName, listener);
   }
-  request(t, e, i) {
-    return new Promise((n, r) => {
+  off(eventName, listener) {
+    return super.off(eventName, listener);
+  }
+  once(eventName, listener) {
+    return super.once(eventName, listener);
+  }
+  emit(eventName, ...args) {
+    return super.emit(eventName, ...args);
+  }
+  async fetch(method, path, { data, query } = {}) {
+    const search = query ? `?${new URLSearchParams(query).toString()}` : "";
+    const headers = {};
+    if (typeof this.accessToken === "string" && this.accessToken.trim().length > 0) {
+      headers.Authorization = `Bearer ${this.accessToken}`;
+    }
+    if (data instanceof URLSearchParams) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+    }
+    const response = await fetch(`${this.endpoint}${path}${search}`, {
+      method,
+      body: data,
+      headers
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(
+        `Discord API request failed: ${response.status} ${response.statusText}`
+      );
+      error.body = body;
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  }
+  connect(clientId) {
+    if (this._connectPromise && this.clientId === clientId) {
+      return this._connectPromise;
+    }
+    if (this.clientId && this.clientId !== clientId) {
+      void this.destroy().catch(() => void 0);
+      this._connectPromise = void 0;
+    }
+    if (!this.transport.socket) {
+      this._connectPromise = void 0;
+    }
+    this._connectPromise = new Promise((resolve, reject) => {
+      this.clientId = clientId;
+      const onConnected = () => {
+        cleanup();
+        resolve(this);
+      };
+      const onDisconnected = (error) => {
+        cleanup();
+        reject(error instanceof Error ? error : new Error("connection closed"));
+      };
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.off("connected", onConnected);
+        this.off("disconnected", onDisconnected);
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error("RPC_CONNECTION_TIMEOUT"));
+      }, 1e4);
+      this.on("connected", onConnected);
+      this.on("disconnected", onDisconnected);
+      this.transport.connect().catch((error) => {
+        cleanup();
+        reject(error);
+      });
+    }).catch((error) => {
+      this._connectPromise = void 0;
+      throw error;
+    });
+    return this._connectPromise;
+  }
+  async login(options) {
+    await this.connect(options.clientId);
+    if (!options.scopes) {
+      this.emit("ready");
+      return this;
+    }
+    if (options.refreshToken) {
+      const auth = await this.refreshOAuthToken(options);
+      if (auth !== null) {
+        options.accessToken = auth.access_token;
+        options.refreshToken = auth.refresh_token;
+        this.accessToken = auth.access_token;
+        this.refreshToken = auth.refresh_token;
+      } else {
+        options.accessToken = void 0;
+        options.refreshToken = void 0;
+      }
+    }
+    if (!options.accessToken || !options.refreshToken) {
+      const auth = await this.authorize(options);
+      options.accessToken = auth.access_token;
+      options.refreshToken = auth.refresh_token;
+      this.accessToken = auth.access_token;
+      this.refreshToken = auth.refresh_token;
+    }
+    return this.authenticate(options);
+  }
+  request(cmd, args, evt) {
+    return new Promise((resolve, reject) => {
       if (!this.transport.socket) {
-        r(new Error("connection closed"));
+        reject(new Error("connection closed"));
         return;
       }
-      const o = Y();
-      this._expecting.set(o, { resolve: n, reject: r });
+      const nonce = uuid();
+      this._expecting.set(nonce, { resolve, reject });
       try {
-        this.transport.send({ cmd: t, args: e, evt: i, nonce: o });
-      } catch (a) {
-        this._expecting.delete(o), r(a);
+        this.transport.send({ cmd, args, evt, nonce });
+      } catch (error) {
+        this._expecting.delete(nonce);
+        reject(error);
       }
     });
   }
-  _onRpcMessage(t) {
-    if (t.cmd === l.DISPATCH && t.evt === f.READY) {
-      t.data && typeof t.data == "object" && "user" in t.data && (this.user = t.data.user ?? null), this.emit("connected");
+  _onRpcMessage(message) {
+    if (message.cmd === RPCCommands.DISPATCH && message.evt === RPCEvents.READY) {
+      if (message.data && typeof message.data === "object" && "user" in message.data) {
+        this.user = message.data.user ?? null;
+      }
+      this.emit("connected");
       return;
     }
-    if (t.evt === "ERROR" && !t.nonce) {
-      const e = t.data ?? {}, i = new Error(e.message ?? "RPC handshake failed");
-      i.code = e.code, i.data = t.data, this.emit("disconnected", i);
+    if (message.evt === "ERROR" && !message.nonce) {
+      const data = message.data ?? {};
+      const error = new Error(data.message ?? "RPC handshake failed");
+      error.code = data.code;
+      error.data = message.data;
+      this.emit("disconnected", error);
       return;
     }
-    if (t.nonce && this._expecting.has(t.nonce)) {
-      const e = this._expecting.get(t.nonce);
-      if (!e)
+    if (message.nonce && this._expecting.has(message.nonce)) {
+      const request = this._expecting.get(message.nonce);
+      if (!request) {
         return;
-      if (t.evt === "ERROR") {
-        const i = t.data ?? {}, n = new Error(i.message ?? "RPC error");
-        n.code = i.code, n.data = t.data, e.reject(n);
-      } else
-        e.resolve(t.data);
-      this._expecting.delete(t.nonce);
+      }
+      if (message.evt === "ERROR") {
+        const data = message.data ?? {};
+        const error = new Error(data.message ?? "RPC error");
+        error.code = data.code;
+        error.data = message.data;
+        request.reject(error);
+      } else {
+        request.resolve(message.data);
+      }
+      this._expecting.delete(message.nonce);
       return;
     }
-    this.emit(t.evt ?? "message", t.data);
+    this.emit(message.evt ?? "message", message.data);
   }
-  async authorize({ scopes: t, clientSecret: e, rpcToken: i, redirectUri: n, prompt: r } = { clientId: "" }) {
-    let o = i;
-    e && i === !0 && (o = (await this.fetch("POST", "/oauth2/token/rpc", {
-      data: new URLSearchParams({
-        client_id: this.clientId || "",
-        client_secret: e
-      })
-    })).rpc_token);
-    const { code: a } = await this.request("AUTHORIZE", {
-      scopes: t,
+  async authorize({ scopes, clientSecret, rpcToken, redirectUri, prompt } = { clientId: "" }) {
+    let nextRpcToken = rpcToken;
+    const verifier = createPkceVerifier();
+    const challenge = await createPkceChallenge(verifier);
+    if (clientSecret && rpcToken === true) {
+      const body = await this.fetch("POST", "/oauth2/token/rpc", {
+        data: createFormBody({
+          client_id: this.clientId || "",
+          client_secret: clientSecret
+        })
+      });
+      nextRpcToken = body.rpc_token;
+    }
+    const { code } = await this.request("AUTHORIZE", {
+      scopes,
       client_id: this.clientId,
-      prompt: r,
-      rpc_token: o
+      prompt,
+      rpc_token: nextRpcToken,
+      code_challenge: challenge,
+      code_challenge_method: "S256"
     });
-    return this.fetch("POST", "/oauth2/token", {
-      data: new URLSearchParams({
-        client_id: this.clientId || "",
-        client_secret: e || "",
-        code: a,
-        grant_type: "authorization_code",
-        redirect_uri: n || ""
-      })
-    });
+    try {
+      return await this.fetch("POST", "/oauth2/token", {
+        data: createFormBody({
+          client_id: this.clientId || "",
+          client_secret: clientSecret,
+          code,
+          grant_type: "authorization_code",
+          code_verifier: verifier,
+          redirect_uri: redirectUri || ""
+        })
+      });
+    } catch (error) {
+      if (error instanceof Error && "status" in error && error.status === 401) {
+        const details = "body" in error ? readApiErrorMessage(error.body) : "";
+        throw new Error(
+          [
+            `Authorization failed (401) while exchanging the Discord OAuth code.`,
+            `This widget authorizes directly from the client, so your Discord app must have Public Client enabled unless you are using a backend/client secret flow.`,
+            `Client ID: ${this.clientId || "(missing)"}. Redirect URI used: ${redirectUri || "(missing)"}.`,
+            `Make sure that exact redirect is listed on the OAuth2 page and that the Public Client toggle is enabled for direct widget authorization.`,
+            details ? `Discord response: ${details}.` : ""
+          ].filter(Boolean).join(" ")
+        );
+      }
+      throw error;
+    }
   }
-  authenticate(t) {
-    return this.request("AUTHENTICATE", {
-      access_token: t.accessToken
-    }).then(({ application: e, user: i }) => (this.accessToken = t.accessToken, this.refreshToken = t.refreshToken, this.application = e, this.user = i, this.emit("ready"), this));
+  async authenticate(options) {
+    try {
+      const { application, user } = await this.request(
+        "AUTHENTICATE",
+        {
+          access_token: options.accessToken
+        }
+      );
+      this.accessToken = options.accessToken;
+      this.refreshToken = options.refreshToken;
+      this.application = application;
+      this.user = user;
+      this.emit("ready");
+      return this;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === 401) {
+        throw new Error("Authentication failed. The provided access token is invalid or has expired.");
+      }
+      throw error;
+    }
   }
-  refreshOAuthToken(t) {
-    return fetch("https://discord.com/api/v10/oauth2/token", {
-      method: "POST",
-      body: new URLSearchParams({
-        client_id: t.clientId,
-        client_secret: t.clientSecret || "",
-        grant_type: "refresh_token",
-        refresh_token: t.refreshToken || ""
-      })
-    }).then((e) => e.json()).catch(() => null);
+  async refreshOAuthToken(options) {
+    try {
+      const response = await fetch(`${this.endpoint}/oauth2/token`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: createFormBody({
+          client_id: options.clientId,
+          client_secret: options.clientSecret,
+          grant_type: "refresh_token",
+          refresh_token: options.refreshToken || ""
+        })
+      });
+      if (!response.ok) {
+        return null;
+      }
+      return await response.json();
+    } catch {
+      return null;
+    }
   }
-  getGuild(t, e) {
-    return this.request(l.GET_GUILD, { guild_id: t, timeout: e });
+  getGuild(id, timeout) {
+    return this.request(RPCCommands.GET_GUILD, { guild_id: id, timeout });
   }
-  async getGuilds(t) {
-    const { guilds: e } = await this.request(l.GET_GUILDS, { timeout: t });
-    return e;
+  async getGuilds(timeout) {
+    const { guilds } = await this.request(RPCCommands.GET_GUILDS, { timeout });
+    return guilds;
   }
-  getChannel(t, e) {
-    return this.request(l.GET_CHANNEL, { channel_id: t, timeout: e });
+  getChannel(id, timeout) {
+    return this.request(RPCCommands.GET_CHANNEL, { channel_id: id, timeout });
   }
-  async getChannels(t, e) {
-    const { channels: i } = await this.request(l.GET_CHANNELS, { guild_id: t, timeout: e });
-    return i;
+  async getChannels(id, timeout) {
+    const { channels } = await this.request(RPCCommands.GET_CHANNELS, { guild_id: id, timeout });
+    return channels;
   }
   async getSelectedVoiceChannel() {
-    return this.request(l.GET_SELECTED_VOICE_CHANNEL);
+    return this.request(RPCCommands.GET_SELECTED_VOICE_CHANNEL);
   }
-  setCertifiedDevices(t) {
-    return this.request(l.SET_CERTIFIED_DEVICES, {
-      devices: t.map((e) => ({
-        type: e.type,
-        id: e.uuid,
-        vendor: e.vendor,
-        model: e.model,
-        related: e.related,
-        echo_cancellation: e.echoCancellation,
-        noise_suppression: e.noiseSuppression,
-        automatic_gain_control: e.automaticGainControl,
-        hardware_mute: e.hardwareMute
+  setCertifiedDevices(devices) {
+    return this.request(RPCCommands.SET_CERTIFIED_DEVICES, {
+      devices: devices.map((device) => ({
+        type: device.type,
+        id: device.uuid,
+        vendor: device.vendor,
+        model: device.model,
+        related: device.related,
+        echo_cancellation: device.echoCancellation,
+        noise_suppression: device.noiseSuppression,
+        automatic_gain_control: device.automaticGainControl,
+        hardware_mute: device.hardwareMute
       }))
     });
   }
-  setPushToTalk(t) {
-    return this.request(l.PUSH_TO_TALK, { active: t });
+  setPushToTalk(state) {
+    return this.request(RPCCommands.PUSH_TO_TALK, { active: state });
   }
-  setUserVoiceSettings(t, e) {
-    return this.request(l.SET_USER_VOICE_SETTINGS, {
-      user_id: t,
-      ...e
+  setUserVoiceSettings(id, settings) {
+    return this.request(RPCCommands.SET_USER_VOICE_SETTINGS, {
+      user_id: id,
+      ...settings
     });
   }
-  selectVoiceChannel(t, { timeout: e, force: i = !1 } = {}) {
-    return this.request(l.SELECT_VOICE_CHANNEL, { channel_id: t, timeout: e, force: i });
+  selectVoiceChannel(id, { timeout, force = false } = {}) {
+    return this.request(RPCCommands.SELECT_VOICE_CHANNEL, { channel_id: id, timeout, force });
   }
-  selectTextChannel(t, { timeout: e } = {}) {
-    return this.request(l.SELECT_TEXT_CHANNEL, { channel_id: t, timeout: e });
+  selectTextChannel(id, { timeout } = {}) {
+    return this.request(RPCCommands.SELECT_TEXT_CHANNEL, { channel_id: id, timeout });
   }
   getVoiceSettings() {
-    return this.request(l.GET_VOICE_SETTINGS);
+    return this.request(RPCCommands.GET_VOICE_SETTINGS);
   }
-  setVoiceSettings(t) {
-    return this.request(l.SET_VOICE_SETTINGS, t);
+  setVoiceSettings(args) {
+    return this.request(RPCCommands.SET_VOICE_SETTINGS, args);
   }
-  captureShortcut(t) {
-    const e = Lt(f.CAPTURE_SHORTCUT_CHANGE), i = () => (this._subscriptions.delete(e), this.request(l.CAPTURE_SHORTCUT, { action: "STOP" }));
-    return this._subscriptions.set(e, ({ shortcut: n }) => {
-      t(n, i);
-    }), this.request(l.CAPTURE_SHORTCUT, { action: "START" }).then(() => i);
+  captureShortcut(callback) {
+    const subscriptionId = subKey(RPCEvents.CAPTURE_SHORTCUT_CHANGE);
+    const stop = () => {
+      this._subscriptions.delete(subscriptionId);
+      return this.request(RPCCommands.CAPTURE_SHORTCUT, { action: "STOP" });
+    };
+    this._subscriptions.set(subscriptionId, ({ shortcut }) => {
+      callback(shortcut, stop);
+    });
+    return this.request(RPCCommands.CAPTURE_SHORTCUT, { action: "START" }).then(() => stop);
   }
-  setActivity(t = {}) {
-    let e, i, n, r;
-    if (t.startTimestamp || t.endTimestamp) {
-      if (e = {
-        start: t.startTimestamp,
-        end: t.endTimestamp
-      }, e.start instanceof Date && (e.start = Math.round(e.start.getTime())), e.end instanceof Date && (e.end = Math.round(e.end.getTime())), e.start > 2147483647e3)
+  setActivity(args = {}) {
+    let timestamps;
+    let assets;
+    let party;
+    let secrets;
+    if (args.startTimestamp || args.endTimestamp) {
+      timestamps = {
+        start: args.startTimestamp,
+        end: args.endTimestamp
+      };
+      if (timestamps.start instanceof Date) {
+        timestamps.start = Math.round(timestamps.start.getTime());
+      }
+      if (timestamps.end instanceof Date) {
+        timestamps.end = Math.round(timestamps.end.getTime());
+      }
+      if (timestamps.start > 2147483647e3) {
         throw new RangeError("timestamps.start must fit into a unix timestamp");
-      if (e.end > 2147483647e3)
+      }
+      if (timestamps.end > 2147483647e3) {
         throw new RangeError("timestamps.end must fit into a unix timestamp");
+      }
     }
-    return (t.largeImageKey || t.largeImageText || t.smallImageKey || t.smallImageText) && (i = {
-      large_image: t.largeImageKey,
-      large_text: t.largeImageText,
-      small_image: t.smallImageKey,
-      small_text: t.smallImageText
-    }), (t.partySize || t.partyId || t.partyMax) && (n = { id: t.partyId }, (t.partySize || t.partyMax) && (n.size = [t.partySize, t.partyMax])), (t.matchSecret || t.joinSecret || t.spectateSecret) && (r = {
-      match: t.matchSecret,
-      join: t.joinSecret,
-      spectate: t.spectateSecret
-    }), this.request(l.SET_ACTIVITY, {
-      pid: q(this.options, t),
+    if (args.largeImageKey || args.largeImageText || args.smallImageKey || args.smallImageText) {
+      assets = {
+        large_image: args.largeImageKey,
+        large_text: args.largeImageText,
+        small_image: args.smallImageKey,
+        small_text: args.smallImageText
+      };
+    }
+    if (args.partySize || args.partyId || args.partyMax) {
+      party = { id: args.partyId };
+      if (args.partySize || args.partyMax) {
+        party.size = [args.partySize, args.partyMax];
+      }
+    }
+    if (args.matchSecret || args.joinSecret || args.spectateSecret) {
+      secrets = {
+        match: args.matchSecret,
+        join: args.joinSecret,
+        spectate: args.spectateSecret
+      };
+    }
+    return this.request(RPCCommands.SET_ACTIVITY, {
+      pid: getProcessId(this.options, args),
       activity: {
-        state: t.state,
-        details: t.details,
-        timestamps: e,
-        assets: i,
-        party: n,
-        secrets: r,
-        buttons: t.buttons,
-        instance: !!t.instance
+        state: args.state,
+        details: args.details,
+        timestamps,
+        assets,
+        party,
+        secrets,
+        buttons: args.buttons,
+        instance: !!args.instance
       }
     });
   }
   clearActivity() {
-    return this.request(l.SET_ACTIVITY, { pid: q(this.options, {}) });
+    return this.request(RPCCommands.SET_ACTIVITY, { pid: getProcessId(this.options, {}) });
   }
-  sendJoinInvite(t) {
-    return this.request(l.SEND_ACTIVITY_JOIN_INVITE, {
-      user_id: typeof t == "string" ? t : t.id
+  sendJoinInvite(user) {
+    return this.request(RPCCommands.SEND_ACTIVITY_JOIN_INVITE, {
+      user_id: typeof user === "string" ? user : user.id
     });
   }
-  sendJoinRequest(t) {
-    return this.request(l.SEND_ACTIVITY_JOIN_REQUEST, {
-      user_id: typeof t == "string" ? t : t.id
+  sendJoinRequest(user) {
+    return this.request(RPCCommands.SEND_ACTIVITY_JOIN_REQUEST, {
+      user_id: typeof user === "string" ? user : user.id
     });
   }
   toggleVideo() {
-    return this.request(l.TOGGLE_VIDEO);
+    return this.request(RPCCommands.TOGGLE_VIDEO);
   }
   toggleScreenshare() {
-    return this.request(l.TOGGLE_SCREENSHARE);
+    return this.request(RPCCommands.TOGGLE_SCREENSHARE);
   }
   getSoundboardSounds() {
-    return this.request(l.GET_SOUNDBOARD_SOUNDS);
+    return this.request(RPCCommands.GET_SOUNDBOARD_SOUNDS);
   }
-  playSoundboardSound(t, e) {
-    return this.request(l.PLAY_SOUNDBOARD_SOUND, { guild_id: t, sound_id: e });
+  playSoundboardSound(guild_id, sound_id) {
+    return this.request(RPCCommands.PLAY_SOUNDBOARD_SOUND, { guild_id, sound_id });
   }
-  closeJoinRequest(t) {
-    return this.request(l.CLOSE_ACTIVITY_JOIN_REQUEST, {
-      user_id: typeof t == "string" ? t : t.id
+  closeJoinRequest(user) {
+    return this.request(RPCCommands.CLOSE_ACTIVITY_JOIN_REQUEST, {
+      user_id: typeof user === "string" ? user : user.id
     });
   }
-  createLobby(t, e, i) {
-    return this.request(l.CREATE_LOBBY, { type: t, capacity: e, metadata: i });
+  createLobby(type, capacity, metadata) {
+    return this.request(RPCCommands.CREATE_LOBBY, { type, capacity, metadata });
   }
-  updateLobby(t, {
-    type: e,
-    owner: i,
-    capacity: n,
-    metadata: r
+  updateLobby(lobby, {
+    type,
+    owner,
+    capacity,
+    metadata
   } = {}) {
-    return this.request(l.UPDATE_LOBBY, {
-      id: typeof t == "string" ? t : t.id,
-      type: e,
-      owner_id: typeof i == "string" ? i : i?.id,
-      capacity: n,
-      metadata: r
+    return this.request(RPCCommands.UPDATE_LOBBY, {
+      id: typeof lobby === "string" ? lobby : lobby.id,
+      type,
+      owner_id: typeof owner === "string" ? owner : owner?.id,
+      capacity,
+      metadata
     });
   }
-  deleteLobby(t) {
-    return this.request(l.DELETE_LOBBY, { id: typeof t == "string" ? t : t.id });
+  deleteLobby(lobby) {
+    return this.request(RPCCommands.DELETE_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id });
   }
-  connectToLobby(t, e) {
-    return this.request(l.CONNECT_TO_LOBBY, { id: t, secret: e });
+  connectToLobby(id, secret) {
+    return this.request(RPCCommands.CONNECT_TO_LOBBY, { id, secret });
   }
-  sendToLobby(t, e) {
-    return this.request(l.SEND_TO_LOBBY, { id: typeof t == "string" ? t : t.id, data: e });
+  sendToLobby(lobby, data) {
+    return this.request(RPCCommands.SEND_TO_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id, data });
   }
-  disconnectFromLobby(t) {
-    return this.request(l.DISCONNECT_FROM_LOBBY, { id: typeof t == "string" ? t : t.id });
+  disconnectFromLobby(lobby) {
+    return this.request(RPCCommands.DISCONNECT_FROM_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id });
   }
-  updateLobbyMember(t, e, i) {
-    return this.request(l.UPDATE_LOBBY_MEMBER, {
-      lobby_id: typeof t == "string" ? t : t.id,
-      user_id: typeof e == "string" ? e : e.id,
-      metadata: i
+  updateLobbyMember(lobby, user, metadata) {
+    return this.request(RPCCommands.UPDATE_LOBBY_MEMBER, {
+      lobby_id: typeof lobby === "string" ? lobby : lobby.id,
+      user_id: typeof user === "string" ? user : user.id,
+      metadata
     });
   }
   getRelationships() {
-    const t = Object.keys(kt);
+    const types = Object.keys(RelationshipTypes);
     return this.request(
-      l.GET_RELATIONSHIPS
-    ).then((e) => e.relationships.map((i) => ({
-      ...i,
-      type: t[i.type]
-    })));
+      RPCCommands.GET_RELATIONSHIPS
+    ).then((response) => {
+      return response.relationships.map((relationship) => ({
+        ...relationship,
+        type: types[relationship.type]
+      }));
+    });
   }
-  async subscribe(t, e) {
-    return await this.request(l.SUBSCRIBE, e, t), {
-      unsubscribe: () => this.request(l.UNSUBSCRIBE, e, t)
+  async subscribe(event, args) {
+    await this.request(RPCCommands.SUBSCRIBE, args, event);
+    return {
+      unsubscribe: () => this.request(RPCCommands.UNSUBSCRIBE, args, event)
     };
   }
   async destroy() {
-    this._expecting.clear(), this._connectPromise = void 0, await this.transport.close();
+    this._expecting.clear();
+    this._connectPromise = void 0;
+    await this.transport.close();
   }
 }
-const w = "displayduck:discord-ipc:token:", Dt = "http://localhost", Ut = ["rpc", "rpc.voice.read", "rpc.voice.write"], xt = ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"], Vt = 1e3, Bt = 500, Mt = 3e3, Gt = 5e3, qt = 3e4, E = (s) => !!s && typeof s == "object", p = (s) => typeof s == "string" ? s.trim() : "", m = (s) => s === !0, Wt = (s) => s.startsWith("a_") ? "gif" : "png", W = (s, t) => {
-  const e = p(t);
-  if (e)
-    return `https://cdn.discordapp.com/${s}/${e}.${Wt(e)}?size=128`;
-}, Ht = () => {
-  const s = [], t = (globalThis.navigator?.platform ?? "").toLowerCase().includes("win");
-  for (const e of xt)
-    for (let i = 0; i < 10; i += 1)
-      s.push(t ? `\\\\.\\pipe\\${e}-${i}` : `${e}-${i}`);
-  return s;
+const STORAGE_PREFIX = "displayduck:discord-ipc:token:";
+const DEFAULT_DISCORD_REDIRECT_URI = "http://localhost";
+const DISCORD_SCOPES = ["rpc", "rpc.voice.read", "rpc.voice.write"];
+const DISCORD_IPC_BUILDS = ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"];
+const SPEAKING_TIMEOUT_MS = 1e3;
+const SPEAKING_WATCHDOG_INTERVAL_MS = 500;
+const VOICE_POLL_INTERVAL_MS = 3e3;
+const RECONNECT_BASE_MS = 5e3;
+const RECONNECT_MAX_MS = 3e4;
+const isRecord = (value) => {
+  return Boolean(value) && typeof value === "object";
 };
-let zt = class {
-  constructor(t) {
-    this.ctx = t, this.participants = [], this.participantElements = /* @__PURE__ */ new Map(), this.renderedParticipants = /* @__PURE__ */ new Map(), this.dom = {
+const readString = (value) => {
+  return typeof value === "string" ? value.trim() : "";
+};
+const readBoolean = (value) => {
+  return value === true;
+};
+const avatarExtension = (hash) => {
+  return hash.startsWith("a_") ? "gif" : "png";
+};
+const toAvatarUrl = (path, hash) => {
+  const normalizedHash = readString(hash);
+  if (!normalizedHash) {
+    return void 0;
+  }
+  return `https://cdn.discordapp.com/${path}/${normalizedHash}.${avatarExtension(normalizedHash)}?size=128`;
+};
+const getDiscordIpcEndpoints = () => {
+  const endpoints = [];
+  const isWindows = (globalThis.navigator?.platform ?? "").toLowerCase().includes("win");
+  for (const build of DISCORD_IPC_BUILDS) {
+    for (let index = 0; index < 10; index += 1) {
+      endpoints.push(isWindows ? `\\\\.\\pipe\\${build}-${index}` : `${build}-${index}`);
+    }
+  }
+  return endpoints;
+};
+let DisplayDuckWidget$1 = class DisplayDuckWidget {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.participants = [];
+    this.participantElements = /* @__PURE__ */ new Map();
+    this.renderedParticipants = /* @__PURE__ */ new Map();
+    this.dom = {
       container: null,
       host: null,
       disconnectedView: null,
@@ -1096,559 +1698,848 @@ let zt = class {
       participantTemplate: null,
       loaderIcon: null,
       discordIcon: null
-    }, this.client = null, this.subscriptions = [], this.reconnectTimer = null, this.speakingWatchdog = null, this.voicePollTimer = null, this.reconnectAttempts = 0, this.runId = 0, this.selectedChannelId = "", this.payload = t.payload ?? {}, this.state = dt({
+    };
+    this.client = null;
+    this.subscriptions = [];
+    this.reconnectTimer = null;
+    this.speakingWatchdog = null;
+    this.voicePollTimer = null;
+    this.reconnectAttempts = 0;
+    this.runId = 0;
+    this.selectedChannelId = "";
+    this.payload = ctx.payload ?? {};
+    this.state = signal({
       message: "Waiting for Discord authorization.",
-      authenticated: !1,
+      authenticated: false,
       participants: [],
-      isLoading: !1,
-      authorizationRequired: !1,
-      retryAvailable: !1,
-      hideableDisconnect: !1,
+      isLoading: false,
+      authorizationRequired: false,
+      retryAvailable: false,
+      hideableDisconnect: false,
       clientId: this.clientId()
     });
   }
   afterRender() {
-    this.cacheDom(), this.reconcileParticipants(), this.render();
+    this.cacheDom();
+    this.reconcileParticipants();
+    this.render();
   }
   onInit() {
     this.ctx.on("click", "#login-btn", () => {
-      if (!this.state().isLoading) {
-        if (this.state().authorizationRequired) {
-          this.authorize();
-          return;
-        }
-        this.syncSession("Connecting to Discord...");
+      if (this.state().isLoading) {
+        return;
       }
-    }), this.ctx.on("click", "[data-participant-id]", (t, e) => {
-      const i = e.getAttribute("data-participant-id")?.trim() ?? "";
-      !i || this.state().isLoading || this.toggleParticipantMute(i);
-    }), this.initialize();
+      if (this.state().authorizationRequired) {
+        void this.authorize();
+        return;
+      }
+      void this.syncSession("Connecting to Discord...");
+    });
+    this.ctx.on("click", "[data-participant-id]", (_event, target) => {
+      const participantId = target.getAttribute("data-participant-id")?.trim() ?? "";
+      if (!participantId || this.state().isLoading) {
+        return;
+      }
+      void this.toggleParticipantMute(participantId);
+    });
+    void this.initialize();
   }
-  onUpdate(t) {
-    this.payload = t ?? {};
-    const e = this.clientId();
-    e !== this.state().clientId && (this.invalidateRun(), this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.cancelReconnect(), this.participants = [], this.clearParticipantElements(), this.destroyClient(), this.patchState({
-      clientId: e,
-      authenticated: !1,
+  onUpdate(payload) {
+    this.payload = payload ?? {};
+    const nextClientId = this.clientId();
+    if (nextClientId === this.state().clientId) {
+      return;
+    }
+    this.invalidateRun();
+    this.stopSpeakingWatchdog();
+    this.stopVoicePolling();
+    this.cancelReconnect();
+    this.participants = [];
+    this.clearParticipantElements();
+    void this.destroyClient();
+    this.patchState({
+      clientId: nextClientId,
+      authenticated: false,
       participants: [],
-      authorizationRequired: !1,
-      retryAvailable: !1,
-      hideableDisconnect: !1,
-      message: e ? "Client changed. Reconnecting to Discord." : "Set a Discord client ID to begin authorization.",
-      isLoading: !1
-    }), this.syncSession("Connecting to Discord..."));
+      authorizationRequired: false,
+      retryAvailable: false,
+      hideableDisconnect: false,
+      message: nextClientId ? "Client changed. Reconnecting to Discord." : "Set a Discord client ID to begin authorization.",
+      isLoading: false
+    });
+    void this.syncSession("Connecting to Discord...");
   }
   onDestroy() {
-    this.invalidateRun(), this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.cancelReconnect(), this.participants = [], this.clearParticipantElements(), this.destroyClient();
+    this.invalidateRun();
+    this.stopSpeakingWatchdog();
+    this.stopVoicePolling();
+    this.cancelReconnect();
+    this.participants = [];
+    this.clearParticipantElements();
+    void this.destroyClient();
   }
   async initialize() {
     await this.syncSession("Connecting to Discord...");
   }
-  async syncSession(t) {
-    const e = this.state().clientId;
-    if (!e) {
+  async syncSession(message) {
+    const clientId = this.state().clientId;
+    if (!clientId) {
       this.patchState({
         message: "Set a Discord client ID to begin authorization.",
-        authenticated: !1,
+        authenticated: false,
         participants: [],
-        authorizationRequired: !1,
-        retryAvailable: !1,
-        hideableDisconnect: !1,
-        isLoading: !1
+        authorizationRequired: false,
+        retryAvailable: false,
+        hideableDisconnect: false,
+        isLoading: false
       });
       return;
     }
-    const i = this.beginRun();
-    this.setBusy(!0, t), this.cancelReconnect();
+    const runId = this.beginRun();
+    this.setBusy(true, message);
+    this.cancelReconnect();
     try {
-      const n = await this.ensureConnected(e);
-      if (!this.isCurrentRun(i))
-        return;
-      const r = this.readStoredToken(e);
-      if (!r?.accessToken) {
-        this.requireAuthorization("Authorize this Discord application.");
+      const client = await this.ensureConnected(clientId);
+      if (!this.isCurrentRun(runId)) return;
+      const storedToken = this.readStoredToken(clientId);
+      if (!storedToken?.accessToken) {
+        this.requireAuthorization("Waiting for Discord authorization.");
         return;
       }
-      if (!await this.restoreStoredSession(n, r) || !this.isCurrentRun(i))
-        return;
-      await this.handleAuthenticated(n);
-    } catch (n) {
-      if (!this.isCurrentRun(i))
-        return;
-      const r = await this.isDiscordRunning();
+      if (await this.restoreStoredSession(client, storedToken)) {
+        if (!this.isCurrentRun(runId)) return;
+        await this.handleAuthenticated(client);
+      }
+    } catch (error) {
+      if (!this.isCurrentRun(runId)) return;
+      const isRunning = await this.isDiscordRunning();
       this.disconnect(
-        r ? n : "Discord is not running.",
-        r ? "Could not connect to Discord." : "Discord is not running.",
-        r
+        error,
+        isRunning ? "Could not connect to Discord." : "Discord is not running.",
+        isRunning
       );
     } finally {
-      this.isCurrentRun(i) && this.setBusy(!1);
+      if (this.isCurrentRun(runId)) {
+        this.setBusy(false);
+      }
     }
   }
   async authorize() {
-    const t = this.state().clientId;
-    if (!t)
+    const clientId = this.state().clientId;
+    const redirectUri = this.redirectUri();
+    if (!clientId) {
+      this.patchState({
+        message: "Set a Discord client ID to begin authorization.",
+        isLoading: false,
+        authorizationRequired: false
+      });
       return;
-    const e = this.beginRun();
-    this.setBusy(!0, "Authorizing with Discord..."), this.cancelReconnect();
-    try {
-      const i = await this.ensureConnected(t);
-      if (!this.isCurrentRun(e) || (await i.login({
-        clientId: t,
-        redirectUri: Dt,
-        scopes: [...Ut]
-      }), !this.isCurrentRun(e)))
-        return;
-      this.persistClientTokens(t, i), await this.handleAuthenticated(i);
-    } catch (i) {
-      if (!this.isCurrentRun(e))
-        return;
-      this.shouldInvalidateToken(i) && this.clearStoredToken(t), this.requireAuthorization(this.formatError(i, "Discord authorization failed."));
-    } finally {
-      this.isCurrentRun(e) && this.setBusy(!1);
     }
-  }
-  async ensureConnected(t) {
-    if (this.client && this.client.clientId === t && this.client.transport.socket)
-      return await this.client.connect(t), this.client;
-    await this.destroyClient();
-    const e = new Pt();
-    return this.bindClient(e), this.client = e, this.selectedChannelId = "", await e.connect(t), e;
-  }
-  bindClient(t) {
-    t.on("disconnected", (i) => {
-      this.client === t && (this.selectedChannelId = "", this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.clearSubscriptions(), this.disconnect(i, "Lost connection to Discord.", !0));
-    });
-    const e = () => {
-      this.client !== t || !this.state().authenticated || this.refreshVoiceState();
-    };
-    t.on(f.VOICE_CHANNEL_SELECT, (i) => {
-      e();
-    }), t.on(f.VOICE_STATE_CREATE, e), t.on(f.VOICE_STATE_UPDATE, e), t.on(f.VOICE_STATE_DELETE, e), t.on(f.SPEAKING_START, (i) => {
-      this.applySpeaking(this.extractUserId(i), !0);
-    }), t.on(f.SPEAKING_STOP, (i) => {
-      this.applySpeaking(this.extractUserId(i), !1);
-    });
-  }
-  async restoreStoredSession(t, e) {
-    const i = this.state().clientId;
-    if (!i)
-      return !1;
+    const runId = this.beginRun();
+    this.setBusy(true, "Awaiting authorization in Discord client...");
+    this.cancelReconnect();
     try {
-      return await t.authenticate({
-        clientId: i,
-        accessToken: e.accessToken,
-        refreshToken: e.refreshToken
-      }), this.persistClientTokens(i, t), !0;
-    } catch (n) {
-      if (e.refreshToken) {
-        const r = await t.refreshOAuthToken({
-          clientId: i,
-          refreshToken: e.refreshToken
-        });
-        if (r?.access_token && r.refresh_token)
-          return await t.authenticate({
-            clientId: i,
-            accessToken: r.access_token,
-            refreshToken: r.refresh_token
-          }), this.persistToken(i, {
-            accessToken: r.access_token,
-            refreshToken: r.refresh_token
-          }), !0;
+      const client = await this.ensureConnected(clientId);
+      if (!this.isCurrentRun(runId)) return;
+      await client.login({
+        clientId,
+        redirectUri,
+        scopes: [...DISCORD_SCOPES],
+        prompt: "consent"
+      });
+      if (!this.isCurrentRun(runId)) return;
+      this.persistClientTokens(clientId, client);
+      await this.handleAuthenticated(client);
+    } catch (error) {
+      if (!this.isCurrentRun(runId)) return;
+      if (this.shouldInvalidateToken(error)) {
+        this.clearStoredToken(clientId);
       }
-      return this.shouldInvalidateToken(n) ? (this.clearStoredToken(i), this.requireAuthorization("Saved authorization expired. Please authorize again."), !1) : (this.disconnect(n, "Discord authentication failed.", !1), !1);
+      this.requireAuthorization(this.formatError(error, "Discord authorization failed."));
+    } finally {
+      if (this.isCurrentRun(runId)) {
+        this.setBusy(false);
+      }
     }
   }
-  async handleAuthenticated(t) {
-    this.reconnectAttempts = 0, this.cancelReconnect(), this.patchState({
-      authenticated: !0,
-      authorizationRequired: !1,
-      retryAvailable: !1,
-      hideableDisconnect: !1,
+  async ensureConnected(clientId) {
+    if (this.client?.clientId === clientId && this.client.transport.socket) {
+      await this.client.connect(clientId);
+      return this.client;
+    }
+    await this.destroyClient();
+    const client = new Client();
+    this.bindClient(client);
+    this.client = client;
+    this.selectedChannelId = "";
+    await client.connect(clientId);
+    return client;
+  }
+  bindClient(client) {
+    client.on("disconnected", (error) => {
+      if (this.client !== client) {
+        return;
+      }
+      this.selectedChannelId = "";
+      this.stopSpeakingWatchdog();
+      this.stopVoicePolling();
+      void this.clearSubscriptions();
+      this.disconnect(error, "Lost connection to Discord.", true);
+    });
+    const refreshVoiceState = () => {
+      if (this.client !== client || !this.state().authenticated) {
+        return;
+      }
+      void this.refreshVoiceState();
+    };
+    client.on(RPCEvents.VOICE_CHANNEL_SELECT, (_payload) => {
+      refreshVoiceState();
+    });
+    client.on(RPCEvents.VOICE_STATE_CREATE, refreshVoiceState);
+    client.on(RPCEvents.VOICE_STATE_UPDATE, refreshVoiceState);
+    client.on(RPCEvents.VOICE_STATE_DELETE, refreshVoiceState);
+    client.on(RPCEvents.SPEAKING_START, (payload) => {
+      this.applySpeaking(this.extractUserId(payload), true);
+    });
+    client.on(RPCEvents.SPEAKING_STOP, (payload) => {
+      this.applySpeaking(this.extractUserId(payload), false);
+    });
+  }
+  async restoreStoredSession(client, token) {
+    const clientId = this.state().clientId;
+    if (!clientId) {
+      return false;
+    }
+    try {
+      await client.authenticate({
+        clientId,
+        accessToken: token.accessToken
+      });
+      this.persistClientTokens(clientId, client);
+      return true;
+    } catch (error) {
+      if (!this.shouldInvalidateToken(error)) {
+        this.disconnect(error, "Could not restore session.", true);
+        return false;
+      }
+    }
+    if (token.refreshToken) {
+      try {
+        const refreshed = await client.refreshOAuthToken({
+          clientId,
+          refreshToken: token.refreshToken
+        });
+        if (refreshed?.access_token) {
+          await client.authenticate({
+            clientId,
+            accessToken: refreshed.access_token
+          });
+          this.persistToken(clientId, {
+            accessToken: refreshed.access_token,
+            refreshToken: refreshed.refresh_token ?? token.refreshToken
+          });
+          return true;
+        }
+      } catch (error) {
+      }
+    }
+    this.clearStoredToken(clientId);
+    this.requireAuthorization("Saved authorization expired. Please authorize again.");
+    return false;
+  }
+  async handleAuthenticated(client) {
+    this.reconnectAttempts = 0;
+    this.cancelReconnect();
+    this.patchState({
+      authenticated: true,
+      authorizationRequired: false,
+      retryAvailable: false,
+      hideableDisconnect: false,
       message: "Loading voice state..."
-    }), await this.refreshVoiceState(), await this.subscribeToVoiceEvents(), this.startSpeakingWatchdog(), this.startVoicePolling();
+    });
+    await this.refreshVoiceState();
+    await this.subscribeToVoiceEvents();
+    this.startSpeakingWatchdog();
+    this.startVoicePolling();
   }
   async subscribeToVoiceEvents() {
-    const t = this.client;
-    if (!t || (await this.clearSubscriptions(), this.subscriptions.push(
-      await t.subscribe(f.VOICE_CHANNEL_SELECT)
-    ), !this.selectedChannelId))
+    const client = this.client;
+    if (!client) {
       return;
-    const e = { channel_id: this.selectedChannelId };
-    for (const i of [
-      f.VOICE_STATE_CREATE,
-      f.VOICE_STATE_UPDATE,
-      f.VOICE_STATE_DELETE,
-      f.SPEAKING_START,
-      f.SPEAKING_STOP
-    ])
-      this.subscriptions.push(await t.subscribe(i, e));
+    }
+    await this.clearSubscriptions();
+    this.subscriptions.push(
+      await client.subscribe(RPCEvents.VOICE_CHANNEL_SELECT)
+    );
+    if (!this.selectedChannelId) {
+      return;
+    }
+    const args = { channel_id: this.selectedChannelId };
+    for (const eventName of [
+      RPCEvents.VOICE_STATE_CREATE,
+      RPCEvents.VOICE_STATE_UPDATE,
+      RPCEvents.VOICE_STATE_DELETE,
+      RPCEvents.SPEAKING_START,
+      RPCEvents.SPEAKING_STOP
+    ]) {
+      this.subscriptions.push(await client.subscribe(eventName, args));
+    }
   }
   async clearSubscriptions() {
-    const t = this.subscriptions.splice(0, this.subscriptions.length);
+    const subscriptions = this.subscriptions.splice(0, this.subscriptions.length);
     await Promise.all(
-      t.map((e) => e.unsubscribe().catch(() => {
-      }))
+      subscriptions.map((subscription) => subscription.unsubscribe().catch(() => void 0))
     );
   }
   async refreshVoiceState() {
-    const t = this.client;
-    if (!t)
-      return;
-    let e = null;
-    try {
-      e = await t.getSelectedVoiceChannel();
-    } catch (d) {
-      this.client === t && this.disconnect(d, "Failed to read the current voice channel.", !0);
+    const client = this.client;
+    if (!client) {
       return;
     }
-    if (this.client !== t)
+    let channel = null;
+    try {
+      channel = await client.getSelectedVoiceChannel();
+    } catch (error) {
+      if (this.client === client) {
+        this.disconnect(error, "Failed to read the current voice channel.", true);
+      }
       return;
-    const i = p(e?.id);
-    i !== this.selectedChannelId && (this.selectedChannelId = i, await this.subscribeToVoiceEvents());
-    const n = this.participants, r = new Map(n.map((d) => [d.id, d])), o = Date.now(), a = Array.isArray(e?.voice_states) ? e.voice_states.map((d) => this.normalizeParticipant(d, r.get(p(E(d?.user) ? d.user.id : void 0)), o, e)).filter((d) => !!d).sort((d, T) => this.participantName(d).localeCompare(this.participantName(T))) : [], c = a.some((d) => d.isSelf) ? a : [], h = c.length > 0 ? "" : "No active voice call or channel found.", u = !this.areParticipantsEqual(n, c);
-    u && (this.participants = c, this.reconcileParticipants()), !(!u && this.state().message === h && this.state().authenticated && !this.state().authorizationRequired && !this.state().retryAvailable) && this.patchState({
-      authenticated: !0,
-      authorizationRequired: !1,
-      retryAvailable: !1,
-      hideableDisconnect: !1,
+    }
+    if (this.client !== client) {
+      return;
+    }
+    const nextChannelId = readString(channel?.id);
+    if (nextChannelId !== this.selectedChannelId) {
+      this.selectedChannelId = nextChannelId;
+      await this.subscribeToVoiceEvents();
+    }
+    const currentParticipants = this.participants;
+    const previous = new Map(currentParticipants.map((participant) => [participant.id, participant]));
+    const now = Date.now();
+    const participants = Array.isArray(channel?.voice_states) ? channel.voice_states.map((voiceState) => this.normalizeParticipant(voiceState, previous.get(readString(isRecord(voiceState?.user) ? voiceState.user.id : void 0)), now, channel)).filter((participant) => Boolean(participant)).sort((left, right) => this.participantName(left).localeCompare(this.participantName(right))) : [];
+    const visibleParticipants = participants.some((participant) => participant.isSelf) ? participants : [];
+    const nextMessage = visibleParticipants.length > 0 ? "" : "No active voice call or channel found.";
+    const participantsChanged = !this.areParticipantsEqual(currentParticipants, visibleParticipants);
+    if (participantsChanged) {
+      this.participants = visibleParticipants;
+      this.reconcileParticipants();
+    }
+    if (!participantsChanged && this.state().message === nextMessage && this.state().authenticated && !this.state().authorizationRequired && !this.state().retryAvailable) {
+      return;
+    }
+    this.patchState({
+      authenticated: true,
+      authorizationRequired: false,
+      retryAvailable: false,
+      hideableDisconnect: false,
       participants: [],
-      message: h
+      message: nextMessage
     });
   }
-  normalizeParticipant(t, e, i, n) {
-    const r = E(t.user) ? t.user : E(t.member) && E(t.member.user) ? t.member.user : null, o = p(r?.id);
-    if (!o)
+  normalizeParticipant(raw, existing, now, channel) {
+    const user = isRecord(raw.user) ? raw.user : isRecord(raw.member) && isRecord(raw.member.user) ? raw.member.user : null;
+    const userId = readString(user?.id);
+    if (!userId) {
       return null;
-    const a = E(t.member) ? t.member : null, c = E(t.voice_state) ? t.voice_state : null, h = p(t.nick || a?.nick || (E(c?.member) ? c.member.nick : void 0)) || void 0, u = p(r?.global_name) || p(r?.username) || "?", d = p(
-      c?.guild_id || a?.guild_id || t.guild_id || n?.guild_id
-    ), T = p(
-      a?.avatar || t.guild_avatar || t.avatar || (E(c?.member) ? c.member.avatar : void 0)
-    ), N = p(r?.avatar), k = typeof t.speaking == "boolean" ? t.speaking : e?.speaking ?? !1;
+    }
+    const member = isRecord(raw.member) ? raw.member : null;
+    const voiceState = isRecord(raw.voice_state) ? raw.voice_state : null;
+    const nick = readString(raw.nick || member?.nick || (isRecord(voiceState?.member) ? voiceState.member.nick : void 0)) || void 0;
+    const username = readString(user?.global_name) || readString(user?.username) || "?";
+    const guildId = readString(
+      voiceState?.guild_id || member?.guild_id || raw.guild_id || channel?.guild_id
+    );
+    const memberAvatarHash = readString(
+      member?.avatar || raw.guild_avatar || raw.avatar || (isRecord(voiceState?.member) ? voiceState.member.avatar : void 0)
+    );
+    const userAvatarHash = readString(user?.avatar);
+    const speaking = typeof raw.speaking === "boolean" ? raw.speaking : existing?.speaking ?? false;
     return {
-      id: o,
-      username: u,
-      nick: h,
+      id: userId,
+      username,
+      nick,
       mute: {
-        user: m(t.mute),
-        server: m(c?.mute) || m(t.server_mute),
-        self: m(c?.self_mute) || m(t.self_mute)
+        user: readBoolean(raw.mute),
+        server: readBoolean(voiceState?.mute) || readBoolean(raw.server_mute),
+        self: readBoolean(voiceState?.self_mute) || readBoolean(raw.self_mute)
       },
       deaf: {
-        server: m(c?.deaf) || m(t.server_deaf),
-        self: m(c?.self_deaf) || m(t.self_deaf)
+        server: readBoolean(voiceState?.deaf) || readBoolean(raw.server_deaf),
+        self: readBoolean(voiceState?.self_deaf) || readBoolean(raw.self_deaf)
       },
-      speaking: k,
-      isSelf: o === this.currentUserId(),
-      serverAvatar: d && T ? W(`guilds/${d}/users/${o}/avatars`, T) : void 0,
-      avatar: N ? W(`avatars/${o}`, N) : void 0,
-      lastSpokeAt: k ? i : e?.lastSpokeAt ?? 0
+      speaking,
+      isSelf: userId === this.currentUserId(),
+      serverAvatar: guildId && memberAvatarHash ? toAvatarUrl(`guilds/${guildId}/users/${userId}/avatars`, memberAvatarHash) : void 0,
+      avatar: userAvatarHash ? toAvatarUrl(`avatars/${userId}`, userAvatarHash) : void 0,
+      lastSpokeAt: speaking ? now : existing?.lastSpokeAt ?? 0
     };
   }
-  applySpeaking(t, e) {
-    if (!t)
+  applySpeaking(userId, speaking) {
+    if (!userId) {
       return;
-    const i = this.participants, n = i.findIndex((o) => o.id === t);
-    if (n < 0 || i[n].speaking === e)
+    }
+    const participants = this.participants;
+    const index = participants.findIndex((participant) => participant.id === userId);
+    if (index < 0 || participants[index].speaking === speaking) {
       return;
-    const r = [...i];
-    r[n] = {
-      ...i[n],
-      speaking: e,
-      lastSpokeAt: e ? Date.now() : i[n].lastSpokeAt
-    }, this.participants = r, this.updateParticipantElement(r[n]);
+    }
+    const nextParticipants = [...participants];
+    nextParticipants[index] = {
+      ...participants[index],
+      speaking,
+      lastSpokeAt: speaking ? Date.now() : participants[index].lastSpokeAt
+    };
+    this.participants = nextParticipants;
+    this.updateParticipantElement(nextParticipants[index]);
   }
-  async toggleParticipantMute(t) {
-    const e = this.client, i = this.participants.find((n) => n.id === t);
-    if (!(!e || !i))
-      try {
-        await e.setUserVoiceSettings(t, { mute: !i.mute.user }), await this.refreshVoiceState();
-      } catch (n) {
-        this.disconnect(n, "Failed to update voice settings.", !0);
-      }
+  async toggleParticipantMute(userId) {
+    const client = this.client;
+    const participant = this.participants.find((entry) => entry.id === userId);
+    if (!client || !participant) {
+      return;
+    }
+    try {
+      await client.setUserVoiceSettings(userId, { mute: !participant.mute.user });
+      await this.refreshVoiceState();
+    } catch (error) {
+      this.disconnect(error, "Failed to update voice settings.", true);
+    }
   }
   render() {
     const {
-      container: t,
-      host: e,
-      disconnectedView: i,
-      participantsView: n,
-      message: r,
-      loginButton: o,
-      icon: a,
-      loaderIcon: c,
-      discordIcon: h
+      container,
+      host,
+      disconnectedView,
+      participantsView,
+      message,
+      loginButton,
+      icon,
+      loaderIcon,
+      discordIcon
     } = this.dom;
-    if (!t || !e || !i || !n || !r || !o)
+    if (!container || !host || !disconnectedView || !participantsView || !message || !loginButton) {
       return;
-    const u = this.state(), d = this.participants.length > 0, T = this.shouldAutoHide();
-    t.hidden = T, t.style.display = T ? "none" : "", this.ctx.mount.style.display = T ? "none" : "", e.className = `discord-ipc align-${this.config("alignment", "top-left")}`, i.hidden = d, i.style.display = d ? "none" : "", n.hidden = !d, n.style.display = d ? "" : "none", r.textContent = this.hasClientId() ? u.message : "No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.", o.hidden = !(this.hasClientId() && !u.isLoading && (u.authorizationRequired || u.retryAvailable)), o.textContent = u.authorizationRequired ? "Authorize Discord" : "Try Again", a?.classList.toggle("loader-active", u.isLoading), c && (c.hidden = !u.isLoading), h && (h.hidden = u.isLoading);
+    }
+    const state = this.state();
+    const hasParticipants = this.participants.length > 0;
+    const hidden = this.shouldAutoHide();
+    container.hidden = hidden;
+    container.style.display = hidden ? "none" : "";
+    this.ctx.mount.style.display = hidden ? "none" : "";
+    host.className = `discord-ipc align-${this.config("alignment", "top-left")}`;
+    disconnectedView.hidden = hasParticipants;
+    disconnectedView.style.display = hasParticipants ? "none" : "";
+    participantsView.hidden = !hasParticipants;
+    participantsView.style.display = hasParticipants ? "" : "none";
+    message.textContent = this.hasClientId() ? state.message : "No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.";
+    loginButton.hidden = !(this.hasClientId() && !state.isLoading && (state.authorizationRequired || state.retryAvailable));
+    loginButton.textContent = state.authorizationRequired ? "Authorize Discord" : "Try Again";
+    icon?.classList.toggle("loader-active", state.isLoading);
+    if (loaderIcon) {
+      loaderIcon.hidden = !state.isLoading;
+    }
+    if (discordIcon) {
+      discordIcon.hidden = state.isLoading;
+    }
   }
   cacheDom() {
-    this.dom.container = this.ctx.mount.querySelector('[data-role="discord-root"]'), this.dom.host = this.ctx.mount.querySelector('[data-role="discord-host"]'), this.dom.disconnectedView = this.ctx.mount.querySelector('[data-role="disconnected-view"]'), this.dom.participantsView = this.ctx.mount.querySelector('[data-role="participants-view"]'), this.dom.participantsList = this.ctx.mount.querySelector('[data-role="participants-list"]'), this.dom.message = this.ctx.mount.querySelector('[data-role="message"]'), this.dom.icon = this.ctx.mount.querySelector('[data-role="icon"]'), this.dom.loginButton = this.ctx.mount.querySelector("#login-btn"), this.dom.participantTemplate = this.ctx.mount.querySelector("#participant-template"), this.dom.loaderIcon = this.ctx.mount.querySelector('[data-role="loader-icon"]'), this.dom.discordIcon = this.ctx.mount.querySelector('[data-role="discord-icon"]');
+    this.dom.container = this.ctx.mount.querySelector('[data-role="discord-root"]');
+    this.dom.host = this.ctx.mount.querySelector('[data-role="discord-host"]');
+    this.dom.disconnectedView = this.ctx.mount.querySelector('[data-role="disconnected-view"]');
+    this.dom.participantsView = this.ctx.mount.querySelector('[data-role="participants-view"]');
+    this.dom.participantsList = this.ctx.mount.querySelector('[data-role="participants-list"]');
+    this.dom.message = this.ctx.mount.querySelector('[data-role="message"]');
+    this.dom.icon = this.ctx.mount.querySelector('[data-role="icon"]');
+    this.dom.loginButton = this.ctx.mount.querySelector("#login-btn");
+    this.dom.participantTemplate = this.ctx.mount.querySelector("#participant-template");
+    this.dom.loaderIcon = this.ctx.mount.querySelector('[data-role="loader-icon"]');
+    this.dom.discordIcon = this.ctx.mount.querySelector('[data-role="discord-icon"]');
   }
   reconcileParticipants() {
-    const t = this.dom.participantsList;
-    if (!t)
+    const list = this.dom.participantsList;
+    if (!list) {
       return;
-    const e = new Set(this.participants.map((i) => i.id));
-    for (const [i, n] of this.participantElements)
-      e.has(i) || (n.root.remove(), this.participantElements.delete(i), this.renderedParticipants.delete(i));
-    this.participants.forEach((i, n) => {
-      const r = this.participantElements.get(i.id) ?? this.createParticipantElement(i.id), o = this.renderedParticipants.get(i.id);
-      (!o || !this.areParticipantsEqual([o], [i])) && this.updateParticipantElement(i);
-      const a = t.children.item(n);
-      a !== r.root && t.insertBefore(r.root, a ?? null);
+    }
+    const nextIds = new Set(this.participants.map((participant) => participant.id));
+    for (const [id, refs] of this.participantElements) {
+      if (nextIds.has(id)) {
+        continue;
+      }
+      refs.root.remove();
+      this.participantElements.delete(id);
+      this.renderedParticipants.delete(id);
+    }
+    this.participants.forEach((participant, index) => {
+      const refs = this.participantElements.get(participant.id) ?? this.createParticipantElement(participant.id);
+      const previous = this.renderedParticipants.get(participant.id);
+      if (!previous || !this.areParticipantsEqual([previous], [participant])) {
+        this.updateParticipantElement(participant);
+      }
+      const nodeAtIndex = list.children.item(index);
+      if (nodeAtIndex !== refs.root) {
+        list.insertBefore(refs.root, nodeAtIndex ?? null);
+      }
     });
   }
-  createParticipantElement(t) {
-    if (!this.dom.participantTemplate)
+  createParticipantElement(participantId) {
+    if (!this.dom.participantTemplate) {
       throw new Error("Participant template not found.");
-    const i = this.dom.participantTemplate.content.cloneNode(!0).firstElementChild, n = {
-      root: i,
-      avatar: i.querySelector(".avatar"),
-      avatarImage: i.querySelector(".avatar > img"),
-      avatarFallback: i.querySelector(".avatar-fallback"),
-      muteContainer: i.querySelector(".mute"),
-      deafIcon: i.querySelector('[data-role="deaf-icon"]'),
-      selfMuteIcon: i.querySelector('[data-role="self-mute-icon"]'),
-      serverMuteIcon: i.querySelector('[data-role="server-mute-icon"]'),
-      userMuteIcon: i.querySelector('[data-role="user-mute-icon"]'),
-      nameWrapper: i.querySelector(".name-wrapper"),
-      name: i.querySelector(".name")
+    }
+    const fragment = this.dom.participantTemplate.content.cloneNode(true);
+    const root = fragment.firstElementChild;
+    const refs = {
+      root,
+      avatar: root.querySelector(".avatar"),
+      avatarImage: root.querySelector(".avatar > img"),
+      avatarFallback: root.querySelector(".avatar-fallback"),
+      muteContainer: root.querySelector(".mute"),
+      deafIcon: root.querySelector('[data-role="deaf-icon"]'),
+      selfMuteIcon: root.querySelector('[data-role="self-mute-icon"]'),
+      serverMuteIcon: root.querySelector('[data-role="server-mute-icon"]'),
+      userMuteIcon: root.querySelector('[data-role="user-mute-icon"]'),
+      nameWrapper: root.querySelector(".name-wrapper"),
+      name: root.querySelector(".name")
     };
-    return n.root.setAttribute("data-participant-id", t), this.participantElements.set(t, n), n;
+    refs.root.setAttribute("data-participant-id", participantId);
+    this.participantElements.set(participantId, refs);
+    return refs;
   }
-  updateParticipantElement(t) {
-    const e = this.participantElements.get(t.id);
-    if (!e)
+  updateParticipantElement(participant) {
+    const refs = this.participantElements.get(participant.id);
+    if (!refs) {
       return;
-    e.root.className = this.participantClasses(t), e.avatar.className = this.avatarClasses(t), e.root.setAttribute("data-participant-id", t.id);
-    const i = this.participantAvatarUrl(t);
-    i ? (e.avatarImage.hidden = !1, e.avatarImage.getAttribute("src") !== i && e.avatarImage.setAttribute("src", i), e.avatarImage.alt = t.username, e.avatarFallback.hidden = !0, e.avatarFallback.textContent = "") : (e.avatarImage.hidden = !0, e.avatarImage.removeAttribute("src"), e.avatarFallback.hidden = !1, e.avatarFallback.textContent = this.participantInitials(t));
-    const n = t.deaf.self || t.deaf.server;
-    e.deafIcon.hidden = !n, e.selfMuteIcon.hidden = n || !t.mute.self, e.serverMuteIcon.hidden = n || t.mute.self || !t.mute.server, e.userMuteIcon.hidden = n || t.mute.self || t.mute.server || !t.mute.user, e.muteContainer.hidden = !this.hasStatusIcon(t), e.nameWrapper.hidden = !this.showNames(), e.name.textContent = this.participantName(t), this.renderedParticipants.set(t.id, t);
+    }
+    refs.root.className = this.participantClasses(participant);
+    refs.avatar.className = this.avatarClasses(participant);
+    refs.root.setAttribute("data-participant-id", participant.id);
+    const avatarUrl = this.participantAvatarUrl(participant);
+    if (avatarUrl) {
+      refs.avatarImage.hidden = false;
+      if (refs.avatarImage.getAttribute("src") !== avatarUrl) {
+        refs.avatarImage.setAttribute("src", avatarUrl);
+      }
+      refs.avatarImage.alt = participant.username;
+      refs.avatarFallback.hidden = true;
+      refs.avatarFallback.textContent = "";
+    } else {
+      refs.avatarImage.hidden = true;
+      refs.avatarImage.removeAttribute("src");
+      refs.avatarFallback.hidden = false;
+      refs.avatarFallback.textContent = this.participantInitials(participant);
+    }
+    const deafened = participant.deaf.self || participant.deaf.server;
+    refs.deafIcon.hidden = !deafened;
+    refs.selfMuteIcon.hidden = deafened || !participant.mute.self;
+    refs.serverMuteIcon.hidden = deafened || participant.mute.self || !participant.mute.server;
+    refs.userMuteIcon.hidden = deafened || participant.mute.self || participant.mute.server || !participant.mute.user;
+    refs.muteContainer.hidden = !this.hasStatusIcon(participant);
+    refs.nameWrapper.hidden = !this.showNames();
+    refs.name.textContent = this.participantName(participant);
+    this.renderedParticipants.set(participant.id, participant);
   }
   clearParticipantElements() {
-    for (const t of this.participantElements.values())
-      t.root.remove();
-    this.participantElements.clear(), this.renderedParticipants.clear();
+    for (const refs of this.participantElements.values()) {
+      refs.root.remove();
+    }
+    this.participantElements.clear();
+    this.renderedParticipants.clear();
   }
   startSpeakingWatchdog() {
-    this.speakingWatchdog || (this.speakingWatchdog = setInterval(() => {
-      const t = this.participants, e = Date.now();
-      let i = !1;
-      const n = t.map((r) => !r.speaking || e - r.lastSpokeAt <= Vt ? r : (i = !0, { ...r, speaking: !1 }));
-      i && (this.participants = n, this.reconcileParticipants());
-    }, Bt));
+    if (this.speakingWatchdog) {
+      return;
+    }
+    this.speakingWatchdog = setInterval(() => {
+      const participants = this.participants;
+      const now = Date.now();
+      let changed = false;
+      const nextParticipants = participants.map((participant) => {
+        if (!participant.speaking || now - participant.lastSpokeAt <= SPEAKING_TIMEOUT_MS) {
+          return participant;
+        }
+        changed = true;
+        return { ...participant, speaking: false };
+      });
+      if (changed) {
+        this.participants = nextParticipants;
+        this.reconcileParticipants();
+      }
+    }, SPEAKING_WATCHDOG_INTERVAL_MS);
   }
   stopSpeakingWatchdog() {
-    this.speakingWatchdog && (clearInterval(this.speakingWatchdog), this.speakingWatchdog = null);
+    if (!this.speakingWatchdog) {
+      return;
+    }
+    clearInterval(this.speakingWatchdog);
+    this.speakingWatchdog = null;
   }
   startVoicePolling() {
-    this.voicePollTimer || (this.voicePollTimer = setInterval(() => {
-      !this.state().authenticated || this.state().authorizationRequired || this.refreshVoiceState();
-    }, Mt));
+    if (this.voicePollTimer) {
+      return;
+    }
+    this.voicePollTimer = setInterval(() => {
+      if (!this.state().authenticated || this.state().authorizationRequired) {
+        return;
+      }
+      void this.refreshVoiceState();
+    }, VOICE_POLL_INTERVAL_MS);
   }
   stopVoicePolling() {
-    this.voicePollTimer && (clearInterval(this.voicePollTimer), this.voicePollTimer = null);
+    if (!this.voicePollTimer) {
+      return;
+    }
+    clearInterval(this.voicePollTimer);
+    this.voicePollTimer = null;
   }
-  disconnect(t, e, i) {
-    this.reconnectAttempts += 1, this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.participants = [], this.clearParticipantElements(), this.patchState({
-      authenticated: !1,
+  disconnect(error, fallback, hideable) {
+    this.reconnectAttempts += 1;
+    this.stopSpeakingWatchdog();
+    this.stopVoicePolling();
+    this.participants = [];
+    this.clearParticipantElements();
+    this.patchState({
+      authenticated: false,
       participants: [],
-      authorizationRequired: !1,
-      retryAvailable: !0,
-      hideableDisconnect: i,
-      message: this.formatError(t, e)
-    }), this.scheduleReconnect();
+      authorizationRequired: false,
+      retryAvailable: true,
+      hideableDisconnect: hideable,
+      message: this.formatError(error, fallback)
+    });
+    this.scheduleReconnect();
   }
-  requireAuthorization(t) {
-    this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.participants = [], this.clearParticipantElements(), this.patchState({
-      authenticated: !1,
+  requireAuthorization(message) {
+    this.stopSpeakingWatchdog();
+    this.stopVoicePolling();
+    this.participants = [];
+    this.clearParticipantElements();
+    this.patchState({
+      authenticated: false,
       participants: [],
-      authorizationRequired: !0,
-      retryAvailable: !1,
-      hideableDisconnect: !1,
-      message: t
+      authorizationRequired: true,
+      retryAvailable: false,
+      hideableDisconnect: false,
+      isLoading: false,
+      message
     });
   }
   scheduleReconnect() {
-    if (this.reconnectTimer || !this.state().clientId || this.state().authorizationRequired)
+    if (this.reconnectTimer || !this.state().clientId || this.state().authorizationRequired) {
       return;
-    const t = this.runId, e = Math.min(Gt * Math.max(1, this.reconnectAttempts), qt);
+    }
+    const runId = this.runId;
+    const delay = Math.min(RECONNECT_BASE_MS * Math.max(1, this.reconnectAttempts), RECONNECT_MAX_MS);
     this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null, !(t !== this.runId || this.state().authenticated || this.state().authorizationRequired) && this.syncSession("Reconnecting to Discord...");
-    }, e);
+      this.reconnectTimer = null;
+      if (runId !== this.runId || this.state().authenticated || this.state().authorizationRequired) {
+        return;
+      }
+      void this.syncSession("Reconnecting to Discord...");
+    }, delay);
   }
   cancelReconnect() {
-    this.reconnectTimer && (clearTimeout(this.reconnectTimer), this.reconnectTimer = null);
+    if (!this.reconnectTimer) {
+      return;
+    }
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
   async destroyClient() {
-    const t = this.client;
-    this.client = null, this.selectedChannelId = "", await this.clearSubscriptions(), t && await t.destroy().catch(() => {
-    });
+    const client = this.client;
+    this.client = null;
+    this.selectedChannelId = "";
+    await this.clearSubscriptions();
+    if (!client) {
+      return;
+    }
+    await client.destroy().catch(() => void 0);
   }
   currentUserId() {
-    const t = this.client?.user;
-    return E(t) ? p(t.id) : "";
+    const user = this.client?.user;
+    if (!isRecord(user)) {
+      return "";
+    }
+    return readString(user.id);
   }
-  extractUserId(t) {
-    return t ? p(t.user_id) ? p(t.user_id) : E(t.user) ? p(t.user.id) : "" : "";
+  extractUserId(payload) {
+    if (!payload) {
+      return "";
+    }
+    if (readString(payload.user_id)) {
+      return readString(payload.user_id);
+    }
+    if (isRecord(payload.user)) {
+      return readString(payload.user.id);
+    }
+    return "";
   }
   showNames() {
-    return !!this.config("showNames", !0);
+    return Boolean(this.config("showNames", true));
   }
-  participantClasses(t) {
-    const e = ["participant"];
-    return t.isSelf && e.push("self"), this.hasStatusIcon(t) && e.push("muted"), e.join(" ");
-  }
-  avatarClasses(t) {
-    return t.speaking ? "avatar speaking" : "avatar";
-  }
-  participantAvatarUrl(t) {
-    return t.serverAvatar || t.avatar || "";
-  }
-  participantInitials(t) {
-    return this.initials(t.username);
-  }
-  participantName(t) {
-    return t.nick || t.username;
-  }
-  hasStatusIcon(t) {
-    return t.deaf.self || t.deaf.server || t.mute.self || t.mute.server || t.mute.user;
-  }
-  areParticipantsEqual(t, e) {
-    if (t.length !== e.length)
-      return !1;
-    for (let i = 0; i < t.length; i += 1) {
-      const n = t[i], r = e[i];
-      if (n.id !== r.id || n.username !== r.username || n.nick !== r.nick || n.speaking !== r.speaking || n.isSelf !== r.isSelf || n.serverAvatar !== r.serverAvatar || n.avatar !== r.avatar || n.lastSpokeAt !== r.lastSpokeAt || n.deaf.server !== r.deaf.server || n.deaf.self !== r.deaf.self || n.mute.user !== r.mute.user || n.mute.server !== r.mute.server || n.mute.self !== r.mute.self)
-        return !1;
+  participantClasses(participant) {
+    const classes = ["participant"];
+    if (participant.isSelf) {
+      classes.push("self");
     }
-    return !0;
+    if (this.hasStatusIcon(participant)) {
+      classes.push("muted");
+    }
+    return classes.join(" ");
   }
-  patchState(t) {
-    this.state.update((e) => {
-      for (const [i, n] of Object.entries(t))
-        if (e[i] !== n)
-          return { ...e, ...t };
-      return e;
+  avatarClasses(participant) {
+    return participant.speaking ? "avatar speaking" : "avatar";
+  }
+  participantAvatarUrl(participant) {
+    return participant.serverAvatar || participant.avatar || "";
+  }
+  participantInitials(participant) {
+    return this.initials(participant.username);
+  }
+  participantName(participant) {
+    return participant.nick || participant.username;
+  }
+  hasStatusIcon(participant) {
+    return participant.deaf.self || participant.deaf.server || participant.mute.self || participant.mute.server || participant.mute.user;
+  }
+  areParticipantsEqual(current, next) {
+    if (current.length !== next.length) {
+      return false;
+    }
+    for (let index = 0; index < current.length; index += 1) {
+      const left = current[index];
+      const right = next[index];
+      if (left.id !== right.id || left.username !== right.username || left.nick !== right.nick || left.speaking !== right.speaking || left.isSelf !== right.isSelf || left.serverAvatar !== right.serverAvatar || left.avatar !== right.avatar || left.lastSpokeAt !== right.lastSpokeAt || left.deaf.server !== right.deaf.server || left.deaf.self !== right.deaf.self || left.mute.user !== right.mute.user || left.mute.server !== right.mute.server || left.mute.self !== right.mute.self) {
+        return false;
+      }
+    }
+    return true;
+  }
+  patchState(patch) {
+    this.state.update((state) => {
+      for (const [key, value] of Object.entries(patch)) {
+        if (state[key] !== value) {
+          return { ...state, ...patch };
+        }
+      }
+      return state;
     });
   }
-  setBusy(t, e) {
-    this.state.update((i) => {
-      const n = e ?? i.message;
-      return i.isLoading === t && i.message === n ? i : {
-        ...i,
-        isLoading: t,
-        message: n
+  setBusy(isLoading, message) {
+    this.state.update((state) => {
+      const nextMessage = message ?? state.message;
+      if (state.isLoading === isLoading && state.message === nextMessage) {
+        return state;
+      }
+      return {
+        ...state,
+        isLoading,
+        message: nextMessage
       };
     });
   }
   beginRun() {
-    return this.runId += 1, this.runId;
+    this.runId += 1;
+    return this.runId;
   }
   invalidateRun() {
-    this.runId += 1, this.setBusy(!1);
+    this.runId += 1;
+    this.setBusy(false);
   }
-  isCurrentRun(t) {
-    return this.runId === t;
+  isCurrentRun(runId) {
+    return this.runId === runId;
   }
-  config(t, e) {
-    return (this.payload.config ?? {})[t] ?? e;
+  config(key, fallback) {
+    const config = this.payload.config ?? {};
+    return config[key] ?? fallback;
   }
   clientId() {
     return String(this.config("clientId", "")).trim();
+  }
+  redirectUri() {
+    return String(this.config("redirectUri", DEFAULT_DISCORD_REDIRECT_URI)).trim() || DEFAULT_DISCORD_REDIRECT_URI;
   }
   hasClientId() {
     return this.state().clientId.length > 0;
   }
   shouldAutoHide() {
-    if (!this.config("autoHide", !1) || !this.hasClientId())
-      return !1;
-    const t = this.state();
-    return t.authorizationRequired || t.retryAvailable && !t.hideableDisconnect ? !1 : this.participants.length === 0;
+    if (!Boolean(this.config("autoHide", false)) || !this.hasClientId()) {
+      return false;
+    }
+    const state = this.state();
+    if (state.authorizationRequired || state.retryAvailable && !state.hideableDisconnect) {
+      return false;
+    }
+    return this.participants.length === 0;
   }
-  readStoredToken(t) {
-    const e = localStorage.getItem(`${w}${t}`);
-    if (!e)
+  readStoredToken(clientId) {
+    const raw = localStorage.getItem(`${STORAGE_PREFIX}${clientId}`);
+    if (!raw) {
       return null;
+    }
     try {
-      const i = JSON.parse(e), n = p(i.accessToken), r = p(i.refreshToken) || void 0;
-      return n ? { accessToken: n, refreshToken: r } : null;
+      const parsed = JSON.parse(raw);
+      const accessToken = readString(parsed.accessToken);
+      const refreshToken = readString(parsed.refreshToken) || void 0;
+      return accessToken ? { accessToken, refreshToken } : null;
     } catch {
       return null;
     }
   }
-  persistClientTokens(t, e) {
-    const i = p(e.accessToken);
-    i && this.persistToken(t, {
-      accessToken: i,
-      refreshToken: p(e.refreshToken) || void 0
+  persistClientTokens(clientId, client) {
+    const accessToken = readString(client.accessToken);
+    if (!accessToken) {
+      return;
+    }
+    this.persistToken(clientId, {
+      accessToken,
+      refreshToken: readString(client.refreshToken) || void 0
     });
   }
-  persistToken(t, e) {
-    localStorage.setItem(`${w}${t}`, JSON.stringify(e));
+  persistToken(clientId, token) {
+    localStorage.setItem(`${STORAGE_PREFIX}${clientId}`, JSON.stringify(token));
   }
-  clearStoredToken(t) {
-    localStorage.removeItem(`${w}${t}`);
+  clearStoredToken(clientId) {
+    localStorage.removeItem(`${STORAGE_PREFIX}${clientId}`);
   }
-  shouldInvalidateToken(t) {
-    const e = this.formatError(t, "").toLowerCase();
-    return e.includes("invalid oauth2 access token") || e.includes("authenticate: invalid") || e.includes("authenticate") && e.includes("401") || e.includes("unauthorized") || e.includes("invalid_grant");
+  shouldInvalidateToken(error) {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const message = error.message.toLowerCase();
+    return message.includes("invalid oauth2 access token") || message.includes("authentication failed") || message.includes("invalid_grant") || message.includes("401");
   }
   async isDiscordRunning() {
-    return (await Promise.all(
-      Ht().map((e) => z(e).catch(() => !1))
-    )).some(Boolean);
+    const checks = await Promise.all(
+      getDiscordIpcEndpoints().map((endpoint) => ipcTransportEndpointExists(endpoint).catch(() => false))
+    );
+    return checks.some(Boolean);
   }
-  formatError(t, e) {
-    const i = t ? t instanceof Error || E(t) && typeof t.message == "string" ? t.message || e : String(t || e) : e;
-    return i.toLowerCase().includes("ipc endpoint is not available") ? `Discord not running
-(No IPC)` : i;
+  formatError(error, fallback) {
+    if (error instanceof Error) {
+      if (error.message.includes("RPC_CONNECTION_TIMEOUT")) {
+        return "Connection to Discord timed out.";
+      }
+      if (error.message.includes("Could not connect")) {
+        return "Could not connect to the Discord client.";
+      }
+      return error.message;
+    }
+    return fallback;
   }
-  initials(t) {
-    const e = t.split(/\s+/).map((i) => i.trim()).filter(Boolean);
-    return e.length === 0 ? "?" : e.slice(0, 2).map((i) => i[0]?.toUpperCase() ?? "").join("") || "?";
+  initials(value) {
+    const tokens = value.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+    if (tokens.length === 0) {
+      return "?";
+    }
+    return tokens.slice(0, 2).map((token) => token[0]?.toUpperCase() ?? "").join("") || "?";
   }
 };
-const $t = `<div class="discord-ipc-wrapper" data-role="discord-root" data-assets-base="{{ASSETS}}">
-  <div class="discord-ipc" data-role="discord-host">
-    <div class="participants-view" data-role="participants-view">
-      <div class="participants" data-role="participants-list"></div>
-      <template id="participant-template">
-        <div class="participant" data-participant-id="">
-          <div class="avatar">
-            <img alt="" loading="lazy" decoding="async" hidden />
-            <div class="avatar-fallback"></div>
-            <div class="mute">
-              <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="" data-role="deaf-icon" hidden />
-              <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="" data-role="self-mute-icon" hidden />
-              <img src="{{ASSETS}}/img/mic-servermuted.png" alt="" data-role="server-mute-icon" hidden />
-              <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="" data-role="user-mute-icon" hidden />
-            </div>
-          </div>
-          <div class="name-wrapper">
-            <div class="name"></div>
-          </div>
-        </div>
-      </template>
-    </div>
-
-    <div class="disconnected-view" data-role="disconnected-view" hidden>
-      <div class="icon" data-role="icon">
-        <img src="{{ASSETS}}/img/loader.gif" alt="Loading" data-role="loader-icon" hidden />
-        <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" data-role="discord-icon" />
-      </div>
-      <div class="message" data-role="message"></div>
-      <button id="login-btn" type="button" class="connect-button">Authorize Discord</button>
-    </div>
-  </div>
-</div>
-`, Yt = "img.invert{--filters: invert(100%) }.discord-ipc-wrapper{display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden}.discord-ipc{display:flex;width:100%;height:100%;flex-direction:column}.discord-ipc.align-bottom-left .participants{justify-content:flex-start;align-items:flex-end}.discord-ipc.align-bottom-right .participants{justify-content:flex-end;align-items:flex-end}.discord-ipc.align-top-left .participants{justify-content:flex-start;align-items:flex-start}.discord-ipc.align-top-right .participants{justify-content:flex-end;align-items:flex-start}.participants-view{width:100%;height:100%}.participants{min-height:0;overflow:hidden;display:flex;flex-wrap:wrap;flex-direction:row;height:100%;width:100%;gap:.5em}.participant{position:relative;display:flex;flex-direction:column;align-items:center;overflow:hidden;aspect-ratio:1/1;transform:scale(.7);opacity:0;animation:popIn var(--transition) forwards;animation-delay:var(--animation-delay);width:var(--cell-width);height:var(--cell-height)}.participant.muted .avatar>img{filter:grayscale(100%) brightness(50%)}.participant.muted .avatar .mute{display:flex;opacity:1;visibility:visible;padding:.5em}.participant.muted .avatar .mute img{flex:1 1 25%;max-width:100%;filter:var(--filters) drop-shadow(1px 1px .25em rgba(0,0,0,.5))}.avatar{position:relative;width:min(var(--cell-width) * .75,var(--cell-height) * .75);height:auto;aspect-ratio:1/1;max-width:75%;max-height:75%;flex:0 0 auto;background:#ffffff1f;border:max(.15em,5px) solid transparent;border-radius:.25em;transition:border-color var(--transition)}.avatar>img{width:100%;height:100%;object-fit:cover;display:block;border-radius:.25em;transition:filter var(--transition)}.avatar.speaking{border-color:#70e070}.avatar-fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.7em;font-weight:700;letter-spacing:.04em;color:#ffffffe6}.mute{display:flex;position:absolute;inset:0;font-size:calc(var(--host-width) / 15);justify-content:center;align-items:center;opacity:0;visibility:hidden;transition:opacity var(--transition),visibility var(--transition)}.name-wrapper{left:0;bottom:0;max-height:25%;font-size:clamp(8px,4.5cqw,22px);width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 .15em}.name{display:block;padding:0 .25em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}.disconnected-view{width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:.65em}.icon img{width:3em;filter:var(--filters)}.message{text-transform:uppercase;line-height:1.3}.connect-button{border:0;border-radius:.35em;padding:.35em .6em;background:#ffffff2e;color:inherit;font-size:1.2em;text-transform:uppercase;transition:opacity var(--transition)}@keyframes popIn{0%{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}", j = It(zt, { template: $t, styles: Yt }), Kt = j, Jt = { DisplayDuckWidget: j, Widget: Kt };
+const template = '<div class="discord-ipc-wrapper" data-role="discord-root" data-assets-base="{{ASSETS}}">\n  <div class="discord-ipc" data-role="discord-host">\n    <div class="participants-view" data-role="participants-view">\n      <div class="participants" data-role="participants-list"></div>\n      <template id="participant-template">\n        <div class="participant" data-participant-id="">\n          <div class="avatar">\n            <img alt="" loading="lazy" decoding="async" hidden />\n            <div class="avatar-fallback"></div>\n            <div class="mute">\n              <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="" data-role="deaf-icon" hidden />\n              <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="" data-role="self-mute-icon" hidden />\n              <img src="{{ASSETS}}/img/mic-servermuted.png" alt="" data-role="server-mute-icon" hidden />\n              <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="" data-role="user-mute-icon" hidden />\n            </div>\n          </div>\n          <div class="name-wrapper">\n            <div class="name"></div>\n          </div>\n        </div>\n      </template>\n    </div>\n\n    <div class="disconnected-view" data-role="disconnected-view" hidden>\n      <div class="icon" data-role="icon">\n        <img src="{{ASSETS}}/img/loader.gif" alt="Loading" data-role="loader-icon" hidden />\n        <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" data-role="discord-icon" />\n      </div>\n      <div class="message" data-role="message"></div>\n      <button id="login-btn" type="button" class="connect-button">Authorize Discord</button>\n    </div>\n  </div>\n</div>\n';
+const styles = "img.invert {\n  --filters: invert(100%) ;\n}\n\n.discord-ipc-wrapper {\n  display: flex;\n  flex-direction: column;\n  width: 100%;\n  height: 100%;\n  overflow: hidden;\n}\n\n.discord-ipc {\n  display: flex;\n  width: 100%;\n  height: 100%;\n  flex-direction: column;\n}\n.discord-ipc.align-bottom-left .participants {\n  justify-content: flex-start;\n  align-items: flex-end;\n}\n.discord-ipc.align-bottom-right .participants {\n  justify-content: flex-end;\n  align-items: flex-end;\n}\n.discord-ipc.align-top-left .participants {\n  justify-content: flex-start;\n  align-items: flex-start;\n}\n.discord-ipc.align-top-right .participants {\n  justify-content: flex-end;\n  align-items: flex-start;\n}\n\n.participants-view {\n  width: 100%;\n  height: 100%;\n}\n\n.participants {\n  min-height: 0;\n  overflow: hidden;\n  display: flex;\n  flex-wrap: wrap;\n  flex-direction: row;\n  height: 100%;\n  width: 100%;\n  gap: 0.5em;\n}\n\n.participant {\n  position: relative;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  overflow: hidden;\n  aspect-ratio: 1/1;\n  transform: scale(0.7);\n  opacity: 0;\n  animation: popIn var(--transition) forwards;\n  animation-delay: var(--animation-delay);\n  width: var(--cell-width);\n  height: var(--cell-height);\n}\n.participant.muted .avatar > img {\n  filter: grayscale(100%) brightness(50%);\n}\n.participant.muted .avatar .mute {\n  display: flex;\n  opacity: 1;\n  visibility: visible;\n  padding: 0.5em;\n}\n.participant.muted .avatar .mute img {\n  flex: 1 1 25%;\n  max-width: 100%;\n  filter: var(--filters) drop-shadow(1px 1px 0.25em rgba(0, 0, 0, 0.5));\n}\n\n.avatar {\n  position: relative;\n  width: min(var(--cell-width) * 0.75, var(--cell-height) * 0.75);\n  height: auto;\n  aspect-ratio: 1/1;\n  max-width: 75%;\n  max-height: 75%;\n  flex: 0 0 auto;\n  background: rgba(255, 255, 255, 0.12);\n  border: max(0.15em, 5px) solid transparent;\n  border-radius: 0.25em;\n  transition: border-color var(--transition);\n}\n.avatar > img {\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  display: block;\n  border-radius: 0.25em;\n  transition: filter var(--transition);\n}\n.avatar.speaking {\n  border-color: rgb(112, 224, 112);\n}\n\n.avatar-fallback {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  font-size: 0.7em;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.mute {\n  display: flex;\n  position: absolute;\n  inset: 0;\n  font-size: calc(var(--host-width) / 15);\n  justify-content: center;\n  align-items: center;\n  opacity: 0;\n  visibility: hidden;\n  transition: opacity var(--transition), visibility var(--transition);\n}\n\n.name-wrapper {\n  left: 0;\n  bottom: 0;\n  max-height: 25%;\n  font-size: clamp(8px, 4.5cqw, 22px);\n  width: 100%;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  padding: 0 0.15em;\n}\n\n.name {\n  display: block;\n  padding: 0 0.25em;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  text-align: center;\n}\n\n.disconnected-view {\n  width: 100%;\n  height: 100%;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n  align-items: center;\n  text-align: center;\n  gap: 0.65em;\n}\n\n.icon img {\n  width: 3em;\n  filter: var(--filters);\n}\n\n.message {\n  text-transform: uppercase;\n  line-height: 1.3;\n}\n\n.connect-button {\n  border: 0;\n  border-radius: 0.35em;\n  padding: 0.35em 0.6em;\n  background: rgba(255, 255, 255, 0.18);\n  color: inherit;\n  font-size: 1.2em;\n  text-transform: uppercase;\n  transition: opacity var(--transition);\n}\n\n@keyframes popIn {\n  0% {\n    transform: scale(0.7);\n    opacity: 0;\n  }\n  100% {\n    transform: scale(1);\n    opacity: 1;\n  }\n}";
+const DisplayDuckWidget2 = createWidgetClass(DisplayDuckWidget$1, { template, styles });
+const Widget = DisplayDuckWidget2;
+const displayduckPackDiscordIpc_discordIpc_entry = { DisplayDuckWidget: DisplayDuckWidget2, Widget };
 export {
-  j as DisplayDuckWidget,
-  Kt as Widget,
-  Jt as default
+  DisplayDuckWidget2 as DisplayDuckWidget,
+  Widget,
+  displayduckPackDiscordIpc_discordIpc_entry as default
 };
+//# sourceMappingURL=discord-ipc.js.map

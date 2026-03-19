@@ -1,7 +1,7 @@
 {
     "icon":"fab fa-discord",
     "name":"Discord IPC",
-    "version": "0.0.1-beta",
+    "version": "0.0.2-beta",
     "description":"Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
     "assets": [
         "./img"
@@ -37,9 +37,15 @@
                 },
                 "clientId": {
                     "label": "Application Client ID",
-                    "subLabel": "[danger]NOTE: Discord RPC API is in closed beta[/danger]\nYou [warning]NEED[/warning] your own client ID to use this widget.",
+                    "subLabel": "[danger]NOTE: Discord RPC API is in closed beta[/danger]\nYou [warning]NEED[/warning] your own client ID to use this widget. For direct widget authorization, enable [code]Public Client[/code] on the Discord OAuth2 page.",
                     "type": "string",
                     "defaultValue": ""
+                },
+                "redirectUri": {
+                    "label": "OAuth Redirect URI",
+                    "subLabel": "Must exactly match a Redirect on the Discord OAuth2 page. [warning]Public Client must be enabled[/warning] when authorizing directly from this widget.",
+                    "type": "string",
+                    "defaultValue": "http://localhost"
                 }
             }
         }

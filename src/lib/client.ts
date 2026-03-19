@@ -33,6 +33,59 @@ const getProcessId = (options: ClientOptions, args: Record<string, unknown>): nu
   return typeof options.pid === 'number' ? options.pid : 0;
 };
 
+const createFormBody = (values: Record<string, string | undefined>): URLSearchParams => {
+  const body = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    body.set(key, trimmed);
+  }
+
+  return body;
+};
+
+const readApiErrorMessage = (body: unknown): string => {
+  if (!body || typeof body !== 'object') {
+    return '';
+  }
+
+  const error = 'error' in body && typeof body.error === 'string' ? body.error : '';
+  const description = 'error_description' in body && typeof body.error_description === 'string'
+    ? body.error_description
+    : '';
+
+  return [error, description].filter(Boolean).join(': ');
+};
+
+const toBase64Url = (bytes: Uint8Array): string => {
+  let binary = '';
+
+  for (const value of bytes) {
+    binary += String.fromCharCode(value);
+  }
+
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+};
+
+const createPkceVerifier = (): string => {
+  const bytes = new Uint8Array(48);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
+};
+
+const createPkceChallenge = async (verifier: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return toBase64Url(new Uint8Array(digest));
+};
+
 export class Client extends EventEmitter {
   public options: ClientOptions;
   public accessToken: string | null = null;
@@ -41,7 +94,7 @@ export class Client extends EventEmitter {
   public application: Application | null = null;
   public user: unknown | null = null;
   public transport: IPCTransport;
-  public endpoint = 'https://discord.com/api';
+  public endpoint = 'https://discord.com/api/v10';
   public _expecting = new Map<string, PendingRequest>();
   public _connectPromise: Promise<Client> | undefined;
   public _subscriptions = new Map<string, unknown>();
@@ -88,22 +141,31 @@ export class Client extends EventEmitter {
     if (typeof this.accessToken === 'string' && this.accessToken.trim().length > 0) {
       headers.Authorization = `Bearer ${this.accessToken}`;
     }
+    if (data instanceof URLSearchParams) {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    }
 
-    return fetch(`${this.endpoint}${path}${search}`, {
+    const response = await fetch(`${this.endpoint}${path}${search}`, {
       method,
       body: data,
       headers,
-    }).then(async (response) => {
-      const body = await response.json();
-
-      if (!response.ok) {
-        const error = new Error(response.status.toString()) as Error & { body?: unknown };
-        error.body = body;
-        throw error;
-      }
-
-      return body;
     });
+
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const error = new Error(
+        `Discord API request failed: ${response.status} ${response.statusText}`,
+      ) as Error & {
+        body?: unknown;
+        status?: number;
+      };
+      error.body = body;
+      error.status = response.status;
+      throw error;
+    }
+
+    return body;
   }
 
   public connect(clientId: string): Promise<Client> | undefined {
@@ -258,10 +320,12 @@ export class Client extends EventEmitter {
     { scopes, clientSecret, rpcToken, redirectUri, prompt }: RPCLoginOptions = { clientId: '' },
   ): Promise<RefreshTokenResponse> {
     let nextRpcToken = rpcToken;
+    const verifier = createPkceVerifier();
+    const challenge = await createPkceChallenge(verifier);
 
     if (clientSecret && rpcToken === true) {
       const body = await this.fetch('POST', '/oauth2/token/rpc', {
-        data: new URLSearchParams({
+        data: createFormBody({
           client_id: this.clientId || '',
           client_secret: clientSecret,
         }),
@@ -275,44 +339,84 @@ export class Client extends EventEmitter {
       client_id: this.clientId,
       prompt,
       rpc_token: nextRpcToken,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
     });
 
-    return this.fetch('POST', '/oauth2/token', {
-      data: new URLSearchParams({
-        client_id: this.clientId || '',
-        client_secret: clientSecret || '',
-        code,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri || '',
-      }),
-    }) as Promise<RefreshTokenResponse>;
+    try {
+      return await this.fetch('POST', '/oauth2/token', {
+        data: createFormBody({
+          client_id: this.clientId || '',
+          client_secret: clientSecret,
+          code,
+          grant_type: 'authorization_code',
+          code_verifier: verifier,
+          redirect_uri: redirectUri || '',
+        }),
+      });
+    } catch (error) {
+      if (error instanceof Error && 'status' in error && error.status === 401) {
+        const details = 'body' in error ? readApiErrorMessage(error.body) : '';
+        throw new Error(
+          [
+            `Authorization failed (401) while exchanging the Discord OAuth code.`,
+            `This widget authorizes directly from the client, so your Discord app must have Public Client enabled unless you are using a backend/client secret flow.`,
+            `Client ID: ${this.clientId || '(missing)'}. Redirect URI used: ${redirectUri || '(missing)'}.`,
+            `Make sure that exact redirect is listed on the OAuth2 page and that the Public Client toggle is enabled for direct widget authorization.`,
+            details ? `Discord response: ${details}.` : '',
+          ].filter(Boolean).join(' '),
+        );
+      }
+      throw error;
+    }
   }
 
-  public authenticate(options: RPCLoginOptions): Promise<this> {
-    return this.request<{ application: Application; user: unknown }>('AUTHENTICATE', {
-      access_token: options.accessToken,
-    }).then(({ application, user }) => {
+  public async authenticate(options: RPCLoginOptions): Promise<this> {
+    try {
+      const { application, user } = await this.request<{ application: Application; user: unknown }>(
+        'AUTHENTICATE',
+        {
+          access_token: options.accessToken,
+        },
+      );
+
       this.accessToken = options.accessToken as string;
       this.refreshToken = options.refreshToken as string;
       this.application = application;
       this.user = user;
       this.emit('ready');
       return this;
-    });
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 401) {
+        throw new Error('Authentication failed. The provided access token is invalid or has expired.');
+      }
+      throw error;
+    }
   }
 
-  public refreshOAuthToken(options: RPCLoginOptions): Promise<RefreshTokenResponse | null> {
-    return fetch('https://discord.com/api/v10/oauth2/token', {
-      method: 'POST',
-      body: new URLSearchParams({
-        client_id: options.clientId,
-        client_secret: options.clientSecret || '',
-        grant_type: 'refresh_token',
-        refresh_token: options.refreshToken || '',
-      }),
-    })
-      .then((response) => response.json())
-      .catch(() => null) as Promise<RefreshTokenResponse | null>;
+  public async refreshOAuthToken(options: RPCLoginOptions): Promise<RefreshTokenResponse | null> {
+    try {
+      const response = await fetch(`${this.endpoint}/oauth2/token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: createFormBody({
+          client_id: options.clientId,
+          client_secret: options.clientSecret,
+          grant_type: 'refresh_token',
+          refresh_token: options.refreshToken || '',
+        }),
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      return (await response.json()) as RefreshTokenResponse;
+    } catch {
+      return null;
+    }
   }
 
   public getGuild(id: string, timeout?: number): Promise<Guild> {

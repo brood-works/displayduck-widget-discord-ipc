@@ -14,7 +14,7 @@ import type {
 } from './lib';
 
 const STORAGE_PREFIX = 'displayduck:discord-ipc:token:';
-const DISCORD_REDIRECT_URI = 'http://localhost';
+const DEFAULT_DISCORD_REDIRECT_URI = 'http://localhost';
 const DISCORD_SCOPES = ['rpc', 'rpc.voice.read', 'rpc.voice.write'] as const;
 const DISCORD_IPC_BUILDS = ['discord-ipc', 'discord-canary-ipc', 'discord-ptb-ipc'] as const;
 const SPEAKING_TIMEOUT_MS = 1000;
@@ -200,32 +200,26 @@ export class DisplayDuckWidget {
 
     try {
       const client = await this.ensureConnected(clientId);
-      if (!this.isCurrentRun(runId)) {
-        return;
-      }
+      if (!this.isCurrentRun(runId)) return;
 
       const storedToken = this.readStoredToken(clientId);
       if (!storedToken?.accessToken) {
-        this.requireAuthorization('Authorize this Discord application.');
+        this.requireAuthorization('Waiting for Discord authorization.');
         return;
       }
 
-      const restored = await this.restoreStoredSession(client, storedToken);
-      if (!restored || !this.isCurrentRun(runId)) {
-        return;
+      if (await this.restoreStoredSession(client, storedToken)) {
+        if (!this.isCurrentRun(runId)) return;
+        await this.handleAuthenticated(client);
       }
-
-      await this.handleAuthenticated(client);
     } catch (error) {
-      if (!this.isCurrentRun(runId)) {
-        return;
-      }
+      if (!this.isCurrentRun(runId)) return;
 
-      const discordRunning = await this.isDiscordRunning();
+      const isRunning = await this.isDiscordRunning();
       this.disconnect(
-        discordRunning ? error : 'Discord is not running.',
-        discordRunning ? 'Could not connect to Discord.' : 'Discord is not running.',
-        discordRunning,
+        error,
+        isRunning ? 'Could not connect to Discord.' : 'Discord is not running.',
+        isRunning,
       );
     } finally {
       if (this.isCurrentRun(runId)) {
@@ -236,39 +230,42 @@ export class DisplayDuckWidget {
 
   private async authorize(): Promise<void> {
     const clientId = this.state().clientId;
+    const redirectUri = this.redirectUri();
     if (!clientId) {
+      this.patchState({
+        message: 'Set a Discord client ID to begin authorization.',
+        isLoading: false,
+        authorizationRequired: false,
+      });
       return;
     }
 
     const runId = this.beginRun();
-    this.setBusy(true, 'Authorizing with Discord...');
+    this.setBusy(true, 'Awaiting authorization in Discord client...');
     this.cancelReconnect();
 
     try {
       const client = await this.ensureConnected(clientId);
-      if (!this.isCurrentRun(runId)) {
-        return;
-      }
+      if (!this.isCurrentRun(runId)) return;
 
       await client.login({
         clientId,
-        redirectUri: DISCORD_REDIRECT_URI,
+        redirectUri,
         scopes: [...DISCORD_SCOPES],
+        prompt: 'consent',
       });
-      if (!this.isCurrentRun(runId)) {
-        return;
-      }
+
+      if (!this.isCurrentRun(runId)) return;
 
       this.persistClientTokens(clientId, client);
       await this.handleAuthenticated(client);
     } catch (error) {
-      if (!this.isCurrentRun(runId)) {
-        return;
-      }
+      if (!this.isCurrentRun(runId)) return;
 
       if (this.shouldInvalidateToken(error)) {
         this.clearStoredToken(clientId);
       }
+
       this.requireAuthorization(this.formatError(error, 'Discord authorization failed.'));
     } finally {
       if (this.isCurrentRun(runId)) {
@@ -278,7 +275,7 @@ export class DisplayDuckWidget {
   }
 
   private async ensureConnected(clientId: string): Promise<Client> {
-    if (this.client && this.client.clientId === clientId && this.client.transport.socket) {
+    if (this.client?.clientId === clientId && this.client.transport.socket) {
       await this.client.connect(clientId);
       return this.client;
     }
@@ -337,40 +334,42 @@ export class DisplayDuckWidget {
       await client.authenticate({
         clientId,
         accessToken: token.accessToken,
-        refreshToken: token.refreshToken,
       });
       this.persistClientTokens(clientId, client);
       return true;
     } catch (error) {
-      if (token.refreshToken) {
+      if (!this.shouldInvalidateToken(error)) {
+        this.disconnect(error, 'Could not restore session.', true);
+        return false;
+      }
+    }
+
+    if (token.refreshToken) {
+      try {
         const refreshed = await client.refreshOAuthToken({
           clientId,
           refreshToken: token.refreshToken,
         });
 
-        if (refreshed?.access_token && refreshed.refresh_token) {
+        if (refreshed?.access_token) {
           await client.authenticate({
             clientId,
             accessToken: refreshed.access_token,
-            refreshToken: refreshed.refresh_token,
           });
           this.persistToken(clientId, {
             accessToken: refreshed.access_token,
-            refreshToken: refreshed.refresh_token,
+            refreshToken: refreshed.refresh_token ?? token.refreshToken,
           });
           return true;
         }
+      } catch (error) {
+        // fall through to re-authorization
       }
-
-      if (this.shouldInvalidateToken(error)) {
-        this.clearStoredToken(clientId);
-        this.requireAuthorization('Saved authorization expired. Please authorize again.');
-        return false;
-      }
-
-      this.disconnect(error, 'Discord authentication failed.', false);
-      return false;
     }
+
+    this.clearStoredToken(clientId);
+    this.requireAuthorization('Saved authorization expired. Please authorize again.');
+    return false;
   }
 
   private async handleAuthenticated(client: Client): Promise<void> {
@@ -834,6 +833,7 @@ export class DisplayDuckWidget {
       authorizationRequired: true,
       retryAvailable: false,
       hideableDisconnect: false,
+      isLoading: false,
       message,
     });
   }
@@ -1020,6 +1020,10 @@ export class DisplayDuckWidget {
     return String(this.config('clientId', '')).trim();
   }
 
+  private redirectUri(): string {
+    return String(this.config('redirectUri', DEFAULT_DISCORD_REDIRECT_URI)).trim() || DEFAULT_DISCORD_REDIRECT_URI;
+  }
+
   private hasClientId(): boolean {
     return this.state().clientId.length > 0;
   }
@@ -1074,13 +1078,15 @@ export class DisplayDuckWidget {
   }
 
   private shouldInvalidateToken(error: unknown): boolean {
-    const message = this.formatError(error, '').toLowerCase();
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const message = error.message.toLowerCase();
     return (
-      message.includes('invalid oauth2 access token')
-      || message.includes('authenticate: invalid')
-      || (message.includes('authenticate') && message.includes('401'))
-      || message.includes('unauthorized')
-      || message.includes('invalid_grant')
+      message.includes('invalid oauth2 access token') ||
+      message.includes('authentication failed') ||
+      message.includes('invalid_grant') ||
+      message.includes('401')
     );
   }
 
@@ -1092,20 +1098,16 @@ export class DisplayDuckWidget {
   }
 
   private formatError(error: unknown, fallback: string): string {
-    const rawMessage = !error
-      ? fallback
-      : error instanceof Error
-        ? (error.message || fallback)
-        : (isRecord(error) && typeof error.message === 'string'
-            ? (error.message || fallback)
-            : String(error || fallback));
-
-    const normalized = rawMessage.toLowerCase();
-    if (normalized.includes('ipc endpoint is not available')) {
-      return 'Discord not running\n(No IPC)';
+    if (error instanceof Error) {
+      if (error.message.includes('RPC_CONNECTION_TIMEOUT')) {
+        return 'Connection to Discord timed out.';
+      }
+      if (error.message.includes('Could not connect')) {
+        return 'Could not connect to the Discord client.';
+      }
+      return error.message;
     }
-
-    return rawMessage;
+    return fallback;
   }
 
   private initials(value: string): string {
