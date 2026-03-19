@@ -1,0 +1,47 @@
+{
+    "icon":"fab fa-discord",
+    "name":"Discord IPC",
+    "version": "0.0.1-beta",
+    "description":"Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
+    "assets": [
+        "./img"
+    ],
+    "widgets": [
+        {
+            "category": "social",
+            "icon": "fa-brands fa-discord",
+            "id": "discord-ipc",
+            "name": "Discord IPC",
+            "description": "Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
+            "platform": ["windows", "macos"],
+            "minWidth": 200,
+            "minHeight": 100,
+            "config": {
+                "autoHide": {
+                    "label": "Auto-hide",
+                    "subLabel": "Hide when not in a channel, or Discord is not running",
+                    "type": "boolean",
+                    "defaultValue": false
+                },
+                "showNames": {
+                    "label": "Show Participant Names",
+                    "type": "boolean",
+                    "defaultValue": true
+                },
+                "alignment": {
+                    "label": "Alignment",
+                    "subLabel": "Where to align participants",
+                    "type": "select",
+                    "options": [ "top-left", "bottom-left", "top-right", "bottom-right" ],
+                    "defaultValue": "top-left"
+                },
+                "clientId": {
+                    "label": "Application Client ID",
+                    "subLabel": "[danger]NOTE: Discord RPC API is in closed beta[/danger]\nYou [warning]NEED[/warning] your own client ID to use this widget.",
+                    "type": "string",
+                    "defaultValue": ""
+                }
+            }
+        }
+    ]
+}

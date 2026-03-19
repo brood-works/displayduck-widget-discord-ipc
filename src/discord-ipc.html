@@ -1,0 +1,33 @@
+<div class="discord-ipc-wrapper" data-role="discord-root" data-assets-base="{{ASSETS}}">
+  <div class="discord-ipc" data-role="discord-host">
+    <div class="participants-view" data-role="participants-view">
+      <div class="participants" data-role="participants-list"></div>
+      <template id="participant-template">
+        <div class="participant" data-participant-id="">
+          <div class="avatar">
+            <img alt="" loading="lazy" decoding="async" hidden />
+            <div class="avatar-fallback"></div>
+            <div class="mute">
+              <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="" data-role="deaf-icon" hidden />
+              <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="" data-role="self-mute-icon" hidden />
+              <img src="{{ASSETS}}/img/mic-servermuted.png" alt="" data-role="server-mute-icon" hidden />
+              <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="" data-role="user-mute-icon" hidden />
+            </div>
+          </div>
+          <div class="name-wrapper">
+            <div class="name"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div class="disconnected-view" data-role="disconnected-view" hidden>
+      <div class="icon" data-role="icon">
+        <img src="{{ASSETS}}/img/loader.gif" alt="Loading" data-role="loader-icon" hidden />
+        <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" data-role="discord-icon" />
+      </div>
+      <div class="message" data-role="message"></div>
+      <button id="login-btn" type="button" class="connect-button">Authorize Discord</button>
+    </div>
+  </div>
+</div>
