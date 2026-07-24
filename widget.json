@@ -1,7 +1,7 @@
 {
     "icon":"fab fa-discord",
     "name":"Discord IPC",
-    "version": "0.0.4-beta",
+    "version": "0.0.5-beta",
     "description":"Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
     "assets": [
         "./img"

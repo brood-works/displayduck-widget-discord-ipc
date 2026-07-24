@@ -26,6 +26,13 @@ const subKey = (event: string, args?: unknown): string => {
   return `${event}${JSON.stringify(args)}`;
 };
 
+type ClientSubscription = {
+  event: string;
+  args?: unknown;
+  count: number;
+  ready: Promise<unknown>;
+};
+
 const getProcessId = (options: ClientOptions, args: Record<string, unknown>): number => {
   const explicitPid = typeof args.pid === 'number' ? args.pid : undefined;
   if (typeof explicitPid === 'number') {
@@ -100,6 +107,7 @@ export class Client extends EventEmitter {
   public _expecting = new Map<string, PendingRequest>();
   public _connectPromise: Promise<Client> | undefined;
   public _subscriptions = new Map<string, unknown>();
+  private rpcSubscriptions = new Map<string, ClientSubscription>();
 
   public constructor(options: ClientOptions = {}) {
     super();
@@ -114,6 +122,7 @@ export class Client extends EventEmitter {
         entry.reject(error instanceof Error ? error : new Error('connection closed'));
       });
       this._expecting.clear();
+      this.rpcSubscriptions.clear();
       this._connectPromise = undefined;
       this.emit('disconnected', error instanceof Error ? error : new Error('connection closed'));
     });
@@ -214,7 +223,11 @@ export class Client extends EventEmitter {
       this.on('connected', onConnected);
       this.on('disconnected', onDisconnected);
 
-      this.transport.connect().catch((error) => {
+      this.transport.connect().then((reused) => {
+        if (reused) {
+          onConnected();
+        }
+      }).catch((error) => {
         cleanup();
         reject(error);
       });
@@ -700,11 +713,56 @@ export class Client extends EventEmitter {
   }
 
   public async subscribe(event: string, args?: unknown): Promise<Subscription> {
-    await this.request(RPCCommands.SUBSCRIBE, args, event);
+    const key = subKey(event, args);
+    let subscription = this.rpcSubscriptions.get(key);
+    if (!subscription) {
+      subscription = {
+        event,
+        args,
+        count: 0,
+        ready: this.request(RPCCommands.SUBSCRIBE, args, event),
+      };
+      this.rpcSubscriptions.set(key, subscription);
+    }
+
+    subscription.count += 1;
+    try {
+      await subscription.ready;
+    } catch (error) {
+      if (this.rpcSubscriptions.get(key) === subscription) {
+        this.rpcSubscriptions.delete(key);
+      }
+      throw error;
+    }
+
+    let active = true;
 
     return {
-      unsubscribe: () => this.request(RPCCommands.UNSUBSCRIBE, args, event),
+      unsubscribe: async () => {
+        if (!active) {
+          return;
+        }
+        active = false;
+
+        const current = this.rpcSubscriptions.get(key);
+        if (current !== subscription) {
+          return;
+        }
+
+        current.count = Math.max(0, current.count - 1);
+        if (current.count > 0) {
+          return;
+        }
+
+        this.rpcSubscriptions.delete(key);
+        await current.ready.catch(() => undefined);
+        await this.request(RPCCommands.UNSUBSCRIBE, current.args, current.event).catch(() => undefined);
+      },
     };
+  }
+
+  public isAuthenticated(): boolean {
+    return Boolean(this.accessToken && this.application && this.user);
   }
 
   public async destroy(): Promise<void> {
@@ -716,6 +774,8 @@ export class Client extends EventEmitter {
       pending.reject(error);
     }
     this._expecting.clear();
+    this._subscriptions.clear();
+    this.rpcSubscriptions.clear();
     this._connectPromise = undefined;
     await this.transport.close();
   }

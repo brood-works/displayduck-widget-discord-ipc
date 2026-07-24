@@ -33,11 +33,12 @@ img {
 }
 
 .participants {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, var(--cell-width, 60px));
-  grid-auto-rows: var(--cell-width, 60px);
-  align-content: start;
-  justify-content: start;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  justify-content: flex-start;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -55,19 +56,21 @@ img {
 .align-top-right .participants,
 .align-center-right .participants,
 .align-bottom-right .participants {
-  justify-content: end;
+  justify-content: flex-end;
 }
 
 .align-center-left .participants,
 .align-center-center .participants,
 .align-center-right .participants {
+  align-items: center;
   align-content: center;
 }
 
 .align-bottom-left .participants,
 .align-bottom-center .participants,
 .align-bottom-right .participants {
-  align-content: end;
+  align-items: flex-end;
+  align-content: flex-end;
 }
 
 .participant {
@@ -76,8 +79,7 @@ img {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  grid-column: span var(--participant-size);
-  grid-row: span var(--participant-size);
+  flex: 0 0 calc(var(--cell-width, 60px) * var(--participant-size));
   width: calc(var(--cell-width, 60px) * var(--participant-size));
   height: calc(var(--cell-width, 60px) * var(--participant-size));
   min-width: 0;

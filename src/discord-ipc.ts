@@ -22,9 +22,74 @@ const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 30000;
 const RECONNECT_JITTER_MS = 750;
 const DISCORD_STATUS_CACHE_MS = 2500;
+const SHARED_CLIENT_IDLE_MS = 3000;
 
 let discordStatusCache: { running: boolean; expiresAt: number } | null = null;
 let discordStatusProbe: Promise<boolean> | null = null;
+
+type SharedDiscordClient = {
+  client: Client;
+  clientId: string;
+  references: number;
+  closeTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type DisplayDuckGlobal = typeof globalThis & {
+  __displayduckDiscordClients?: Map<string, SharedDiscordClient>;
+};
+
+// Each view loads a pack widget through its own Blob module. Keep this broker
+// on the WebView global so those module boundaries still share one Client and
+// one IPC transport.
+const sharedDiscordClients = (() => {
+  const globalScope = globalThis as DisplayDuckGlobal;
+  if (!globalScope.__displayduckDiscordClients) {
+    globalScope.__displayduckDiscordClients = new Map<string, SharedDiscordClient>();
+  }
+  return globalScope.__displayduckDiscordClients;
+})();
+
+const acquireSharedDiscordClient = (clientId: string): Client => {
+  let shared = sharedDiscordClients.get(clientId);
+  if (!shared) {
+    shared = {
+      client: new Client(),
+      clientId,
+      references: 0,
+      closeTimer: null,
+    };
+    sharedDiscordClients.set(clientId, shared);
+  }
+
+  if (shared.closeTimer) {
+    clearTimeout(shared.closeTimer);
+    shared.closeTimer = null;
+  }
+  shared.references += 1;
+  return shared.client;
+};
+
+const releaseSharedDiscordClient = (client: Client): void => {
+  const shared = Array.from(sharedDiscordClients.values())
+    .find((candidate) => candidate.client === client);
+  if (!shared) {
+    return;
+  }
+
+  shared.references = Math.max(0, shared.references - 1);
+  if (shared.references > 0 || shared.closeTimer) {
+    return;
+  }
+
+  shared.closeTimer = setTimeout(() => {
+    shared.closeTimer = null;
+    if (shared.references > 0) {
+      return;
+    }
+    sharedDiscordClients.delete(shared.clientId);
+    void shared.client.destroy();
+  }, SHARED_CLIENT_IDLE_MS);
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value) && typeof value === 'object';
@@ -67,6 +132,7 @@ export class DisplayDuckWidget {
   private readonly state: WritableSignal<DiscordWidgetState>;
 
   private client: Client | null = null;
+  private clientListenerCleanups: Array<() => void> = [];
   private subscriptions: Subscription[] = [];
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private speakingWatchdog: ReturnType<typeof setInterval> | null = null;
@@ -193,6 +259,11 @@ export class DisplayDuckWidget {
       if (!this.isCurrentRun(runId)) return;
 
       const storedToken = this.readStoredToken(clientId);
+      if (client.isAuthenticated()) {
+        await this.handleAuthenticated(client);
+        return;
+      }
+
       if (!storedToken?.accessToken) {
         this.requireAuthorization('Waiting for Discord authorization.');
         return;
@@ -265,23 +336,30 @@ export class DisplayDuckWidget {
   }
 
   private async ensureConnected(clientId: string): Promise<Client> {
-    if (this.client?.clientId === clientId && this.client.transport.socket) {
+    if (this.client?.clientId === clientId) {
       await this.client.connect(clientId);
       return this.client;
     }
 
     await this.destroyClient();
 
-    const client = new Client();
-    this.bindClient(client);
+    const client = acquireSharedDiscordClient(clientId);
     this.client = client;
     this.selectedChannelId = '';
-    await client.connect(clientId);
-    return client;
+    this.bindClient(client);
+    try {
+      await client.connect(clientId);
+      return client;
+    } catch (error) {
+      await this.destroyClient();
+      throw error;
+    }
   }
 
   private bindClient(client: Client): void {
-    client.on('disconnected', (error) => {
+    this.unbindClientListeners();
+
+    const onDisconnected = (error: unknown) => {
       if (this.client !== client) {
         return;
       }
@@ -291,7 +369,7 @@ export class DisplayDuckWidget {
       this.stopVoicePolling();
       void this.clearSubscriptions(false);
       this.disconnect(error, 'Lost connection to Discord.', true);
-    });
+    };
 
     const refreshVoiceState = () => {
       if (this.client !== client || !this.state().authenticated) {
@@ -300,18 +378,43 @@ export class DisplayDuckWidget {
       void this.refreshVoiceState();
     };
 
-    client.on(RPCEvents.VOICE_CHANNEL_SELECT, (_payload?: DiscordVoiceChannelSelectPayload) => {
+    const onVoiceChannelSelect = (_payload?: DiscordVoiceChannelSelectPayload) => {
       refreshVoiceState();
-    });
-    client.on(RPCEvents.VOICE_STATE_CREATE, refreshVoiceState);
-    client.on(RPCEvents.VOICE_STATE_UPDATE, refreshVoiceState);
-    client.on(RPCEvents.VOICE_STATE_DELETE, refreshVoiceState);
-    client.on(RPCEvents.SPEAKING_START, (payload?: DiscordSpeakingEventPayload) => {
+    };
+    const onVoiceStateCreate = () => refreshVoiceState();
+    const onVoiceStateUpdate = () => refreshVoiceState();
+    const onVoiceStateDelete = () => refreshVoiceState();
+    const onSpeakingStart = (payload?: DiscordSpeakingEventPayload) => {
       this.applySpeaking(this.extractUserId(payload), true);
-    });
-    client.on(RPCEvents.SPEAKING_STOP, (payload?: DiscordSpeakingEventPayload) => {
+    };
+    const onSpeakingStop = (payload?: DiscordSpeakingEventPayload) => {
       this.applySpeaking(this.extractUserId(payload), false);
-    });
+    };
+
+    client.on('disconnected', onDisconnected);
+    client.on(RPCEvents.VOICE_CHANNEL_SELECT, onVoiceChannelSelect);
+    client.on(RPCEvents.VOICE_STATE_CREATE, onVoiceStateCreate);
+    client.on(RPCEvents.VOICE_STATE_UPDATE, onVoiceStateUpdate);
+    client.on(RPCEvents.VOICE_STATE_DELETE, onVoiceStateDelete);
+    client.on(RPCEvents.SPEAKING_START, onSpeakingStart);
+    client.on(RPCEvents.SPEAKING_STOP, onSpeakingStop);
+
+    this.clientListenerCleanups = [
+      () => client.off('disconnected', onDisconnected),
+      () => client.off(RPCEvents.VOICE_CHANNEL_SELECT, onVoiceChannelSelect),
+      () => client.off(RPCEvents.VOICE_STATE_CREATE, onVoiceStateCreate),
+      () => client.off(RPCEvents.VOICE_STATE_UPDATE, onVoiceStateUpdate),
+      () => client.off(RPCEvents.VOICE_STATE_DELETE, onVoiceStateDelete),
+      () => client.off(RPCEvents.SPEAKING_START, onSpeakingStart),
+      () => client.off(RPCEvents.SPEAKING_STOP, onSpeakingStop),
+    ];
+  }
+
+  private unbindClientListeners(): void {
+    for (const cleanup of this.clientListenerCleanups) {
+      cleanup();
+    }
+    this.clientListenerCleanups = [];
   }
 
   private async restoreStoredSession(client: Client, token: DiscordStoredToken): Promise<boolean> {
@@ -712,13 +815,14 @@ export class DisplayDuckWidget {
     const client = this.client;
     this.client = null;
     this.selectedChannelId = '';
-    await this.clearSubscriptions(false);
+    this.unbindClientListeners();
+    await this.clearSubscriptions();
 
     if (!client) {
       return;
     }
 
-    await client.destroy().catch(() => undefined);
+    releaseSharedDiscordClient(client);
   }
 
   private currentUserId(): string {

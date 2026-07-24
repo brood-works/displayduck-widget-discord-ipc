@@ -102,6 +102,15 @@ const getReachableEndpoints = async (client: Client): Promise<string[]> => {
   return promise;
 };
 
+const getSharedSessionId = (clientId: string | null, endpoint: string): string => {
+  let hash = 2166136261;
+  for (const character of `discord:${clientId ?? ''}\u0000${endpoint}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `displayduck-discord-ipc-${(hash >>> 0).toString(16)}`;
+};
+
 const concatBytes = (left: Uint8Array, right: Uint8Array): Uint8Array => {
   const merged = new Uint8Array(left.length + right.length);
   merged.set(left, 0);
@@ -153,7 +162,7 @@ export class IPCTransport extends EventEmitter {
   public client: Client;
   public socket: ProxyIpcTransport | null = null;
   private buffer = new Uint8Array(0);
-  private connectPromise: Promise<void> | null = null;
+  private connectPromise: Promise<boolean> | null = null;
   private connectionGeneration = 0;
 
   public constructor(client: Client) {
@@ -161,9 +170,9 @@ export class IPCTransport extends EventEmitter {
     this.client = client;
   }
 
-  public async connect(): Promise<void> {
+  public async connect(): Promise<boolean> {
     if (this.socket) {
-      return;
+      return false;
     }
 
     if (this.connectPromise) {
@@ -202,7 +211,9 @@ export class IPCTransport extends EventEmitter {
     const socket = this.socket;
     this.socket = null;
     this.buffer = new Uint8Array(0);
-    await socket.write(encode(OPCodes.CLOSE, {})).catch(() => undefined);
+    // Detach this frontend from the retained IPC session. Sending Discord's
+    // protocol CLOSE frame here would terminate the shared connection for
+    // every other widget that is about to attach to it.
     await socket.close();
   }
 
@@ -253,7 +264,7 @@ export class IPCTransport extends EventEmitter {
     }
   }
 
-  private async connectInternal(generation: number): Promise<void> {
+  private async connectInternal(generation: number): Promise<boolean> {
     this.buffer = new Uint8Array(0);
     const candidateEndpoints = getCandidateEndpoints(this.client);
     const reachableEndpoints = await getReachableEndpoints(this.client);
@@ -271,7 +282,10 @@ export class IPCTransport extends EventEmitter {
 
     for (let attempt = 0; attempt < CONNECT_ATTEMPTS; attempt += 1) {
       for (const endpoint of endpoints) {
-        const transport = new ProxyIpcTransport({ endpoint });
+        const transport = new ProxyIpcTransport({
+          endpoint,
+          sessionId: getSharedSessionId(this.client.clientId, endpoint),
+        });
         const unbindOpen = transport.on('open', () => {
           this.emit('open');
         });
@@ -287,7 +301,7 @@ export class IPCTransport extends EventEmitter {
         });
 
         try {
-          await transport.connectWithInitialWrite(
+          const reused = await transport.connectWithInitialWrite(
             encode(OPCodes.HANDSHAKE, {
               v: 1,
               client_id: this.client.clientId,
@@ -298,7 +312,7 @@ export class IPCTransport extends EventEmitter {
             throw new Error('Discord IPC connection was cancelled.');
           }
           this.socket = transport;
-          return;
+          return reused;
         } catch (error) {
           unbindOpen();
           unbindData();
