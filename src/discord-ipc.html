@@ -1,35 +1,76 @@
 {{#if showWidget()}}
-  <div class="discord-ipc-wrapper {{#if shadowsEnabled()}}shadows{{/if}}" data-role="discord-root" data-assets-base="{{ASSETS}}">
-    <div class="discord-ipc" data-role="discord-host">
-      <div class="participants-view" data-role="participants-view">
-        <div class="participants" data-role="participants-list"></div>
-        <template id="participant-template">
-          <div class="participant" data-participant-id="">
-            <div class="avatar">
-              <img alt="" loading="lazy" decoding="async" hidden />
-              <div class="avatar-fallback"></div>
-              <div class="mute">
-                <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="" data-role="deaf-icon" hidden />
-                <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="" data-role="self-mute-icon" hidden />
-                <img src="{{ASSETS}}/img/mic-servermuted.png" alt="" data-role="server-mute-icon" hidden />
-                <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="" data-role="user-mute-icon" hidden />
+  <div class="discord-ipc-wrapper {{#if shadowsEnabled()}}shadows{{/if}}">
+    <div class="discord-ipc align-{{alignmentClass()}}">
+      {{#if state().participants.length > 0}}
+        <div class="participants-view">
+          <div class="participants">
+            {{#each state().participants}}
+              <div
+                class="participant {{participantClasses(this)}}"
+                data-participant-id="{{this.id}}"
+                style="--participant-size: {{participantGridSize()}};"
+              >
+                <div class="avatar">
+                  {{#if participantAvatarUrl(this)}}
+                    <img src="{{participantAvatarUrl(this)}}" alt="{{this.username}}" loading="lazy" decoding="async" />
+                  {{/if}}
+                  {{#if !participantAvatarUrl(this)}}
+                    <div class="avatar-fallback">{{participantInitials(this)}}</div>
+                  {{/if}}
+                  {{#if hasStatusIcon(this)}}
+                    <div class="mute">
+                      {{#if participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="Deafened" />
+                      {{/if}}
+                      {{#if this.mute.self && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="Self muted" />
+                      {{/if}}
+                      {{#if this.mute.server && !this.mute.self && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-servermuted.png" alt="Server muted" />
+                      {{/if}}
+                      {{#if this.mute.user && !this.mute.self && !this.mute.server && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="Muted" />
+                      {{/if}}
+                    </div>
+                  {{/if}}
+                </div>
+                {{#if showNames()}}
+                  <div class="name-wrapper">
+                    <div class="name">{{participantName(this)}}</div>
+                  </div>
+                {{/if}}
               </div>
-            </div>
-            <div class="name-wrapper">
-              <div class="name"></div>
-            </div>
+            {{/each}}
           </div>
-        </template>
-      </div>
-
-      <div class="disconnected-view" data-role="disconnected-view" hidden>
-        <div class="icon" data-role="icon">
-          <img src="{{ASSETS}}/img/loader.gif" alt="Loading" data-role="loader-icon" hidden />
-          <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" data-role="discord-icon" />
         </div>
-        <div class="message" data-role="message"></div>
-        <button id="login-btn" type="button" class="connect-button">Authorize Discord</button>
-      </div>
+      {{/if}}
+
+      {{#if state().participants.length === 0}}
+        <div class="disconnected-view">
+          <div class="icon">
+            {{#if state().isLoading}}
+              <img src="{{ASSETS}}/img/loader.gif" alt="Loading" />
+            {{/if}}
+            {{#if !state().isLoading}}
+              <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" />
+            {{/if}}
+          </div>
+          <div class="message">
+            {{#if hasClientId()}}
+              {{state().message}}
+            {{/if}}
+            {{#if !hasClientId()}}
+              No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.
+            {{/if}}
+          </div>
+          {{#if hasClientId() && !state().isLoading && (state().authorizationRequired || state().retryAvailable)}}
+            <button id="login-btn" type="button" class="connect-button">
+              {{#if state().authorizationRequired}}Authorize Discord{{/if}}
+              {{#if !state().authorizationRequired}}Try Again{{/if}}
+            </button>
+          {{/if}}
+        </div>
+      {{/if}}
     </div>
   </div>
 {{/if}}

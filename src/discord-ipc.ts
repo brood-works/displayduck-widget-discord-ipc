@@ -8,9 +8,7 @@ import type {
   DiscordSpeakingEventPayload,
   DiscordStoredToken,
   DiscordVoiceChannelSelectPayload,
-  DiscordWidgetDomRefs,
   DiscordWidgetState,
-  ParticipantElementRefs,
 } from './lib';
 
 const STORAGE_PREFIX = 'displayduck:discord-ipc:token:';
@@ -22,6 +20,11 @@ const SPEAKING_WATCHDOG_INTERVAL_MS = 500;
 const VOICE_POLL_INTERVAL_MS = 3000;
 const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 30000;
+const RECONNECT_JITTER_MS = 750;
+const DISCORD_STATUS_CACHE_MS = 2500;
+
+let discordStatusCache: { running: boolean; expiresAt: number } | null = null;
+let discordStatusProbe: Promise<boolean> | null = null;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return Boolean(value) && typeof value === 'object';
@@ -53,31 +56,15 @@ const getDiscordIpcEndpoints = (): string[] => {
   const isWindows = (globalThis.navigator?.platform ?? '').toLowerCase().includes('win');
   for (const build of DISCORD_IPC_BUILDS) {
     for (let index = 0; index < 10; index += 1) {
-      endpoints.push(isWindows ? `\\\\.\\pipe\\${build}-${index}` : `${build}-${index}`);
+      endpoints.push(isWindows ? `\\\\.\\pipe\\${build}-${index}` : `/tmp/${build}-${index}`);
     }
   }
   return endpoints;
 };
 
 export class DisplayDuckWidget {
-  private payload: Record<string, unknown>;
+  private readonly payload: WritableSignal<Record<string, unknown>>;
   private readonly state: WritableSignal<DiscordWidgetState>;
-  private participants: DiscordParticipant[] = [];
-  private readonly participantElements = new Map<string, ParticipantElementRefs>();
-  private readonly renderedParticipants = new Map<string, DiscordParticipant>();
-  private readonly dom: DiscordWidgetDomRefs = {
-    container: null,
-    host: null,
-    disconnectedView: null,
-    participantsView: null,
-    participantsList: null,
-    message: null,
-    icon: null,
-    loginButton: null,
-    participantTemplate: null,
-    loaderIcon: null,
-    discordIcon: null,
-  };
 
   private client: Client | null = null;
   private subscriptions: Subscription[] = [];
@@ -87,9 +74,10 @@ export class DisplayDuckWidget {
   private reconnectAttempts = 0;
   private runId = 0;
   private selectedChannelId = '';
+  private readonly liveSpeaking = new Map<string, { speaking: boolean; lastSpokeAt: number }>();
 
   public constructor(private readonly ctx: WidgetContext) {
-    this.payload = ctx.payload ?? {};
+    this.payload = signal(ctx.payload ?? {});
     this.state = signal<DiscordWidgetState>({
       message: 'Waiting for Discord authorization.',
       authenticated: false,
@@ -104,9 +92,12 @@ export class DisplayDuckWidget {
 
   public afterRender(): void {
     this.ctx.mount.style.display = '';
-    this.cacheDom();
-    this.reconcileParticipants();
-    this.render();
+    for (const participant of this.state().participants) {
+      this.patchParticipantSpeaking(
+        participant.id,
+        this.liveSpeaking.get(participant.id)?.speaking ?? participant.speaking,
+      );
+    }
   }
 
   public onInit(): void {
@@ -136,7 +127,7 @@ export class DisplayDuckWidget {
   }
 
   public onUpdate(payload: Record<string, unknown>): void {
-    this.payload = payload ?? {};
+    this.payload.set(payload ?? {});
     const nextClientId = this.clientId();
     if (nextClientId === this.state().clientId) {
       return;
@@ -146,8 +137,7 @@ export class DisplayDuckWidget {
     this.stopSpeakingWatchdog();
     this.stopVoicePolling();
     this.cancelReconnect();
-    this.participants = [];
-    this.clearParticipantElements();
+    this.liveSpeaking.clear();
     void this.destroyClient();
 
     this.patchState({
@@ -171,8 +161,7 @@ export class DisplayDuckWidget {
     this.stopSpeakingWatchdog();
     this.stopVoicePolling();
     this.cancelReconnect();
-    this.participants = [];
-    this.clearParticipantElements();
+    this.liveSpeaking.clear();
     void this.destroyClient();
   }
 
@@ -300,7 +289,7 @@ export class DisplayDuckWidget {
       this.selectedChannelId = '';
       this.stopSpeakingWatchdog();
       this.stopVoicePolling();
-      void this.clearSubscriptions();
+      void this.clearSubscriptions(false);
       this.disconnect(error, 'Lost connection to Discord.', true);
     });
 
@@ -421,8 +410,12 @@ export class DisplayDuckWidget {
     }
   }
 
-  private async clearSubscriptions(): Promise<void> {
+  private async clearSubscriptions(unsubscribe = true): Promise<void> {
     const subscriptions = this.subscriptions.splice(0, this.subscriptions.length);
+    if (!unsubscribe) {
+      return;
+    }
+
     await Promise.all(
       subscriptions.map((subscription) => subscription.unsubscribe().catch(() => undefined)),
     );
@@ -454,7 +447,7 @@ export class DisplayDuckWidget {
       await this.subscribeToVoiceEvents();
     }
 
-    const currentParticipants = this.participants;
+    const currentParticipants = this.state().participants;
     const previous = new Map(currentParticipants.map((participant) => [participant.id, participant]));
     const now = Date.now();
     const participants = Array.isArray(channel?.voice_states)
@@ -466,12 +459,18 @@ export class DisplayDuckWidget {
     const visibleParticipants = participants.some((participant) => participant.isSelf) ? participants : [];
     const nextMessage = visibleParticipants.length > 0 ? '' : 'No active voice call or channel found.';
 
-    const participantsChanged = !this.areParticipantsEqual(currentParticipants, visibleParticipants);
-    if (participantsChanged) {
-      this.participants = visibleParticipants;
-      this.reconcileParticipants();
+    const visibleIds = new Set(visibleParticipants.map((participant) => participant.id));
+    for (const userId of this.liveSpeaking.keys()) {
+      if (!visibleIds.has(userId)) {
+        this.liveSpeaking.delete(userId);
+      }
     }
 
+    for (const participant of visibleParticipants) {
+      this.patchParticipantSpeaking(participant.id, participant.speaking);
+    }
+
+    const participantsChanged = !this.areParticipantsEqual(currentParticipants, visibleParticipants);
     if (
       !participantsChanged
       && this.state().message === nextMessage
@@ -487,7 +486,7 @@ export class DisplayDuckWidget {
       authorizationRequired: false,
       retryAvailable: false,
       hideableDisconnect: false,
-      participants: [],
+      participants: visibleParticipants,
       message: nextMessage,
     });
   }
@@ -523,7 +522,14 @@ export class DisplayDuckWidget {
       || (isRecord(voiceState?.member) ? voiceState.member.avatar : undefined),
     );
     const userAvatarHash = readString(user?.avatar);
-    const speaking = typeof raw.speaking === 'boolean' ? raw.speaking : (existing?.speaking ?? false);
+    const liveSpeaking = this.liveSpeaking.get(userId);
+    const speaking = typeof raw.speaking === 'boolean'
+      ? raw.speaking
+      : (liveSpeaking?.speaking ?? existing?.speaking ?? false);
+    const lastSpokeAt = speaking
+      ? (liveSpeaking?.lastSpokeAt ?? existing?.lastSpokeAt ?? now)
+      : (liveSpeaking?.lastSpokeAt ?? existing?.lastSpokeAt ?? 0);
+    this.liveSpeaking.set(userId, { speaking, lastSpokeAt });
 
     return {
       id: userId,
@@ -544,7 +550,7 @@ export class DisplayDuckWidget {
         ? toAvatarUrl(`guilds/${guildId}/users/${userId}/avatars`, memberAvatarHash)
         : undefined,
       avatar: userAvatarHash ? toAvatarUrl(`avatars/${userId}`, userAvatarHash) : undefined,
-      lastSpokeAt: speaking ? now : (existing?.lastSpokeAt ?? 0),
+      lastSpokeAt,
     };
   }
 
@@ -553,26 +559,30 @@ export class DisplayDuckWidget {
       return;
     }
 
-    const participants = this.participants;
-    const index = participants.findIndex((participant) => participant.id === userId);
-    if (index < 0 || participants[index].speaking === speaking) {
+    const participant = this.state().participants.find((entry) => entry.id === userId);
+    const existingSpeaking = this.liveSpeaking.get(userId);
+    if (!participant || existingSpeaking?.speaking === speaking) {
       return;
     }
 
-    const nextParticipants = [...participants];
-    nextParticipants[index] = {
-      ...participants[index],
-      speaking,
-      lastSpokeAt: speaking ? Date.now() : participants[index].lastSpokeAt,
-    };
+    const lastSpokeAt = speaking
+      ? Date.now()
+      : (existingSpeaking?.lastSpokeAt ?? participant.lastSpokeAt);
+    this.liveSpeaking.set(userId, { speaking, lastSpokeAt });
+    this.patchParticipantSpeaking(userId, speaking);
+  }
 
-    this.participants = nextParticipants;
-    this.updateParticipantElement(nextParticipants[index]);
+  private patchParticipantSpeaking(userId: string, speaking: boolean): void {
+    const participantElement = Array.from(
+      this.ctx.mount.querySelectorAll<HTMLElement>('[data-participant-id]'),
+    ).find((element) => element.getAttribute('data-participant-id') === userId);
+    const avatar = participantElement?.querySelector<HTMLElement>('.avatar');
+    avatar?.classList.toggle('speaking', speaking);
   }
 
   private async toggleParticipantMute(userId: string): Promise<void> {
     const client = this.client;
-    const participant = this.participants.find((entry) => entry.id === userId);
+    const participant = this.state().participants.find((entry) => entry.id === userId);
     if (!client || !participant) {
       return;
     }
@@ -585,188 +595,23 @@ export class DisplayDuckWidget {
     }
   }
 
-  private render(): void {
-    const {
-      host,
-      disconnectedView,
-      participantsView,
-      message,
-      loginButton,
-      icon,
-      loaderIcon,
-      discordIcon,
-    } = this.dom;
-    if (!host || !disconnectedView || !participantsView || !message || !loginButton) {
-      return;
-    }
-
-    const state = this.state();
-    const hasParticipants = this.participants.length > 0;
-    host.className = `discord-ipc align-${this.config('alignment', 'top-left')}`;
-
-    disconnectedView.hidden = hasParticipants;
-    disconnectedView.style.display = hasParticipants ? 'none' : '';
-    participantsView.hidden = !hasParticipants;
-    participantsView.style.display = hasParticipants ? '' : 'none';
-
-    message.textContent = this.hasClientId()
-      ? state.message
-      : 'No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.';
-
-    loginButton.hidden = !(
-      this.hasClientId()
-      && !state.isLoading
-      && (state.authorizationRequired || state.retryAvailable)
-    );
-    loginButton.textContent = state.authorizationRequired ? 'Authorize Discord' : 'Try Again';
-
-    icon?.classList.toggle('loader-active', state.isLoading);
-    if (loaderIcon) {
-      loaderIcon.hidden = !state.isLoading;
-    }
-    if (discordIcon) {
-      discordIcon.hidden = state.isLoading;
-    }
-  }
-
-  private cacheDom(): void {
-    this.dom.container = this.ctx.mount.querySelector('[data-role="discord-root"]');
-    this.dom.host = this.ctx.mount.querySelector('[data-role="discord-host"]');
-    this.dom.disconnectedView = this.ctx.mount.querySelector('[data-role="disconnected-view"]');
-    this.dom.participantsView = this.ctx.mount.querySelector('[data-role="participants-view"]');
-    this.dom.participantsList = this.ctx.mount.querySelector('[data-role="participants-list"]');
-    this.dom.message = this.ctx.mount.querySelector('[data-role="message"]');
-    this.dom.icon = this.ctx.mount.querySelector('[data-role="icon"]');
-    this.dom.loginButton = this.ctx.mount.querySelector('#login-btn');
-    this.dom.participantTemplate = this.ctx.mount.querySelector('#participant-template');
-    this.dom.loaderIcon = this.ctx.mount.querySelector('[data-role="loader-icon"]');
-    this.dom.discordIcon = this.ctx.mount.querySelector('[data-role="discord-icon"]');
-  }
-
-  private reconcileParticipants(): void {
-    const list = this.dom.participantsList;
-    if (!list) {
-      return;
-    }
-
-    const nextIds = new Set(this.participants.map((participant) => participant.id));
-    for (const [id, refs] of this.participantElements) {
-      if (nextIds.has(id)) {
-        continue;
-      }
-
-      refs.root.remove();
-      this.participantElements.delete(id);
-      this.renderedParticipants.delete(id);
-    }
-
-    this.participants.forEach((participant, index) => {
-      const refs = this.participantElements.get(participant.id) ?? this.createParticipantElement(participant.id);
-      const previous = this.renderedParticipants.get(participant.id);
-      if (!previous || !this.areParticipantsEqual([previous], [participant])) {
-        this.updateParticipantElement(participant);
-      }
-
-      const nodeAtIndex = list.children.item(index);
-      if (nodeAtIndex !== refs.root) {
-        list.insertBefore(refs.root, nodeAtIndex ?? null);
-      }
-    });
-  }
-
-  private createParticipantElement(participantId: string): ParticipantElementRefs {
-    if (!this.dom.participantTemplate) {
-      throw new Error('Participant template not found.');
-    }
-
-    const fragment = this.dom.participantTemplate.content.cloneNode(true) as DocumentFragment;
-    const root = fragment.firstElementChild as HTMLDivElement;
-    const refs: ParticipantElementRefs = {
-      root,
-      avatar: root.querySelector('.avatar') as HTMLDivElement,
-      avatarImage: root.querySelector('.avatar > img') as HTMLImageElement,
-      avatarFallback: root.querySelector('.avatar-fallback') as HTMLDivElement,
-      muteContainer: root.querySelector('.mute') as HTMLDivElement,
-      deafIcon: root.querySelector('[data-role="deaf-icon"]') as HTMLImageElement,
-      selfMuteIcon: root.querySelector('[data-role="self-mute-icon"]') as HTMLImageElement,
-      serverMuteIcon: root.querySelector('[data-role="server-mute-icon"]') as HTMLImageElement,
-      userMuteIcon: root.querySelector('[data-role="user-mute-icon"]') as HTMLImageElement,
-      nameWrapper: root.querySelector('.name-wrapper') as HTMLDivElement,
-      name: root.querySelector('.name') as HTMLDivElement,
-    };
-
-    refs.root.setAttribute('data-participant-id', participantId);
-    this.participantElements.set(participantId, refs);
-    return refs;
-  }
-
-  private updateParticipantElement(participant: DiscordParticipant): void {
-    const refs = this.participantElements.get(participant.id);
-    if (!refs) {
-      return;
-    }
-
-    refs.root.className = this.participantClasses(participant);
-    refs.avatar.className = this.avatarClasses(participant);
-    refs.root.setAttribute('data-participant-id', participant.id);
-
-    const avatarUrl = this.participantAvatarUrl(participant);
-    if (avatarUrl) {
-      refs.avatarImage.hidden = false;
-      if (refs.avatarImage.getAttribute('src') !== avatarUrl) {
-        refs.avatarImage.setAttribute('src', avatarUrl);
-      }
-      refs.avatarImage.alt = participant.username;
-      refs.avatarFallback.hidden = true;
-      refs.avatarFallback.textContent = '';
-    } else {
-      refs.avatarImage.hidden = true;
-      refs.avatarImage.removeAttribute('src');
-      refs.avatarFallback.hidden = false;
-      refs.avatarFallback.textContent = this.participantInitials(participant);
-    }
-
-    const deafened = participant.deaf.self || participant.deaf.server;
-    refs.deafIcon.hidden = !deafened;
-    refs.selfMuteIcon.hidden = deafened || !participant.mute.self;
-    refs.serverMuteIcon.hidden = deafened || participant.mute.self || !participant.mute.server;
-    refs.userMuteIcon.hidden = deafened || participant.mute.self || participant.mute.server || !participant.mute.user;
-    refs.muteContainer.hidden = !this.hasStatusIcon(participant);
-
-    refs.nameWrapper.hidden = !this.showNames();
-    refs.name.textContent = this.participantName(participant);
-    this.renderedParticipants.set(participant.id, participant);
-  }
-
-  private clearParticipantElements(): void {
-    for (const refs of this.participantElements.values()) {
-      refs.root.remove();
-    }
-    this.participantElements.clear();
-    this.renderedParticipants.clear();
-  }
-
   private startSpeakingWatchdog(): void {
     if (this.speakingWatchdog) {
       return;
     }
 
     this.speakingWatchdog = setInterval(() => {
-      const participants = this.participants;
       const now = Date.now();
-      let changed = false;
-      const nextParticipants = participants.map((participant) => {
-        if (!participant.speaking || now - participant.lastSpokeAt <= SPEAKING_TIMEOUT_MS) {
-          return participant;
+      for (const [userId, speakingState] of this.liveSpeaking) {
+        if (!speakingState.speaking || now - speakingState.lastSpokeAt <= SPEAKING_TIMEOUT_MS) {
+          continue;
         }
 
-        changed = true;
-        return { ...participant, speaking: false };
-      });
-
-      if (changed) {
-        this.participants = nextParticipants;
-        this.reconcileParticipants();
+        this.liveSpeaking.set(userId, {
+          speaking: false,
+          lastSpokeAt: speakingState.lastSpokeAt,
+        });
+        this.patchParticipantSpeaking(userId, false);
       }
     }, SPEAKING_WATCHDOG_INTERVAL_MS);
   }
@@ -807,8 +652,7 @@ export class DisplayDuckWidget {
     this.reconnectAttempts += 1;
     this.stopSpeakingWatchdog();
     this.stopVoicePolling();
-    this.participants = [];
-    this.clearParticipantElements();
+    this.liveSpeaking.clear();
     this.patchState({
       authenticated: false,
       participants: [],
@@ -823,8 +667,7 @@ export class DisplayDuckWidget {
   private requireAuthorization(message: string): void {
     this.stopSpeakingWatchdog();
     this.stopVoicePolling();
-    this.participants = [];
-    this.clearParticipantElements();
+    this.liveSpeaking.clear();
     this.patchState({
       authenticated: false,
       participants: [],
@@ -842,7 +685,11 @@ export class DisplayDuckWidget {
     }
 
     const runId = this.runId;
-    const delay = Math.min(RECONNECT_BASE_MS * Math.max(1, this.reconnectAttempts), RECONNECT_MAX_MS);
+    const backoff = Math.min(
+      RECONNECT_BASE_MS * (2 ** Math.min(Math.max(0, this.reconnectAttempts - 1), 4)),
+      RECONNECT_MAX_MS,
+    );
+    const delay = backoff + Math.round(Math.random() * RECONNECT_JITTER_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (runId !== this.runId || this.state().authenticated || this.state().authorizationRequired) {
@@ -865,7 +712,7 @@ export class DisplayDuckWidget {
     const client = this.client;
     this.client = null;
     this.selectedChannelId = '';
-    await this.clearSubscriptions();
+    await this.clearSubscriptions(false);
 
     if (!client) {
       return;
@@ -903,16 +750,42 @@ export class DisplayDuckWidget {
     return Boolean(this.config('shadow', false));
   }
 
+  public alignmentClass(): string {
+    const alignment = this.config('alignment', 'top-left');
+    return typeof alignment === 'string' && alignment.length > 0 ? alignment : 'top-left';
+  }
+
+  public participantGridSize(): number {
+    const configuredSize = String(this.config('participantSize', 'default')).trim().toLowerCase();
+    if (configuredSize.startsWith('small')) {
+      return 1;
+    }
+    if (configuredSize.startsWith('large')) {
+      return 3;
+    }
+    if (configuredSize.startsWith('xl')) {
+      return 4;
+    }
+    if (configuredSize.startsWith('xxxl')) {
+      return 6;
+    }
+    if (configuredSize.startsWith('xxl')) {
+      return 5;
+    }
+
+    return 2;
+  }
+
   public showWidget(): boolean {
     return !this.shouldAutoHide();
   }
 
-  private showNames(): boolean {
+  public showNames(): boolean {
     return Boolean(this.config('showNames', true));
   }
 
-  private participantClasses(participant: DiscordParticipant): string {
-    const classes = ['participant'];
+  public participantClasses(participant: DiscordParticipant): string {
+    const classes: string[] = [];
     if (participant.isSelf) {
       classes.push('self');
     }
@@ -922,28 +795,28 @@ export class DisplayDuckWidget {
     return classes.join(' ');
   }
 
-  private avatarClasses(participant: DiscordParticipant): string {
-    return participant.speaking ? 'avatar speaking' : 'avatar';
-  }
-
-  private participantAvatarUrl(participant: DiscordParticipant): string {
+  public participantAvatarUrl(participant: DiscordParticipant): string {
     return participant.serverAvatar || participant.avatar || '';
   }
 
-  private participantInitials(participant: DiscordParticipant): string {
+  public participantInitials(participant: DiscordParticipant): string {
     return this.initials(participant.username);
   }
 
-  private participantName(participant: DiscordParticipant): string {
+  public participantName(participant: DiscordParticipant): string {
     return participant.nick || participant.username;
   }
 
-  private hasStatusIcon(participant: DiscordParticipant): boolean {
+  public hasStatusIcon(participant: DiscordParticipant): boolean {
     return participant.deaf.self
       || participant.deaf.server
       || participant.mute.self
       || participant.mute.server
       || participant.mute.user;
+  }
+
+  public participantIsDeafened(participant: DiscordParticipant): boolean {
+    return participant.deaf.self || participant.deaf.server;
   }
 
   private areParticipantsEqual(current: DiscordParticipant[], next: DiscordParticipant[]): boolean {
@@ -958,11 +831,9 @@ export class DisplayDuckWidget {
         left.id !== right.id
         || left.username !== right.username
         || left.nick !== right.nick
-        || left.speaking !== right.speaking
         || left.isSelf !== right.isSelf
         || left.serverAvatar !== right.serverAvatar
         || left.avatar !== right.avatar
-        || left.lastSpokeAt !== right.lastSpokeAt
         || left.deaf.server !== right.deaf.server
         || left.deaf.self !== right.deaf.self
         || left.mute.user !== right.mute.user
@@ -1018,7 +889,11 @@ export class DisplayDuckWidget {
   }
 
   private config<T>(key: string, fallback: T): T {
-    const config = (this.payload as { config?: Record<string, unknown> }).config ?? {};
+    const config = this.payload().config;
+    if (!isRecord(config)) {
+      return fallback;
+    }
+
     return (config[key] as T | undefined) ?? fallback;
   }
 
@@ -1044,7 +919,7 @@ export class DisplayDuckWidget {
       return false;
     }
 
-    return this.participants.length === 0;
+    return this.state().participants.length === 0;
   }
 
   private readStoredToken(clientId: string): DiscordStoredToken | null {
@@ -1100,16 +975,43 @@ export class DisplayDuckWidget {
   }
 
   private async isDiscordRunning(): Promise<boolean> {
-    const checks = await Promise.all(
+    if (discordStatusCache && discordStatusCache.expiresAt > Date.now()) {
+      return discordStatusCache.running;
+    }
+
+    if (discordStatusProbe) {
+      return discordStatusProbe;
+    }
+
+    discordStatusProbe = Promise.all(
       getDiscordIpcEndpoints().map((endpoint) => ipcTransportEndpointExists(endpoint).catch(() => false)),
-    );
-    return checks.some(Boolean);
+    ).then((checks) => {
+      const running = checks.some(Boolean);
+      discordStatusCache = {
+        running,
+        expiresAt: Date.now() + DISCORD_STATUS_CACHE_MS,
+      };
+      return running;
+    }).finally(() => {
+      discordStatusProbe = null;
+    });
+
+    return discordStatusProbe;
   }
 
   private formatError(error: unknown, fallback: string): string {
     if (error instanceof Error) {
       if (error.message.includes('RPC_CONNECTION_TIMEOUT')) {
         return 'Connection to Discord timed out.';
+      }
+      if (error.message.includes('endpoint is not available')) {
+        return 'Discord is not running, or IPC access is unavailable.';
+      }
+      if (error.message.toLowerCase().includes('invalid client')) {
+        return 'Discord rejected the Client ID. Check that it is a valid Discord application Client ID.';
+      }
+      if (error.message.toLowerCase().includes('rpc request timed out')) {
+        return `${error.message} Discord may be busy, disconnected, or refusing this application.`;
       }
       if (error.message.includes('Could not connect')) {
         return 'Could not connect to the Discord client.';

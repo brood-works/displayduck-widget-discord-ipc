@@ -3,6 +3,7 @@ export type EventHandler = (...args: any[]) => void;
 export type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+  timeout?: ReturnType<typeof setTimeout>;
 };
 
 export type RpcFrame = {
@@ -44,20 +45,6 @@ export type DiscordParticipant = {
   serverAvatar?: string;
   avatar?: string;
   lastSpokeAt: number;
-};
-
-export type ParticipantElementRefs = {
-  root: HTMLDivElement;
-  avatar: HTMLDivElement;
-  avatarImage: HTMLImageElement;
-  avatarFallback: HTMLDivElement;
-  muteContainer: HTMLDivElement;
-  deafIcon: HTMLImageElement;
-  selfMuteIcon: HTMLImageElement;
-  serverMuteIcon: HTMLImageElement;
-  userMuteIcon: HTMLImageElement;
-  nameWrapper: HTMLDivElement;
-  name: HTMLDivElement;
 };
 
 export type DiscordWidgetState = {
@@ -124,18 +111,4 @@ export type DiscordSpeakingEventPayload = {
 export type DiscordVoiceChannelSelectPayload = {
   channel_id?: unknown;
   guild_id?: unknown;
-};
-
-export type DiscordWidgetDomRefs = {
-  container: HTMLElement | null;
-  host: HTMLElement | null;
-  disconnectedView: HTMLElement | null;
-  participantsView: HTMLElement | null;
-  participantsList: HTMLElement | null;
-  message: HTMLElement | null;
-  icon: HTMLElement | null;
-  loginButton: HTMLButtonElement | null;
-  participantTemplate: HTMLTemplateElement | null;
-  loaderIcon: HTMLImageElement | null;
-  discordIcon: HTMLImageElement | null;
 };

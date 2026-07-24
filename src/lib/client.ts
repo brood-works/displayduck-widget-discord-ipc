@@ -20,6 +20,8 @@ import type {
 } from './interfaces';
 import type { ClientOptions, EventHandler, PendingRequest, RpcFrame } from './types';
 
+const RPC_REQUEST_TIMEOUT_MS = 8000;
+
 const subKey = (event: string, args?: unknown): string => {
   return `${event}${JSON.stringify(args)}`;
 };
@@ -106,6 +108,9 @@ export class Client extends EventEmitter {
     this.transport.on('message', this._onRpcMessage.bind(this));
     this.transport.on('close', (error) => {
       this._expecting.forEach((entry) => {
+        if (entry.timeout) {
+          clearTimeout(entry.timeout);
+        }
         entry.reject(error instanceof Error ? error : new Error('connection closed'));
       });
       this._expecting.clear();
@@ -261,10 +266,20 @@ export class Client extends EventEmitter {
       }
 
       const nonce = uuid();
-      this._expecting.set(nonce, { resolve, reject });
+      const timeout = setTimeout(() => {
+        const pending = this._expecting.get(nonce);
+        if (!pending) {
+          return;
+        }
+
+        this._expecting.delete(nonce);
+        pending.reject(new Error(`Discord RPC request timed out: ${cmd}.`));
+      }, RPC_REQUEST_TIMEOUT_MS);
+      this._expecting.set(nonce, { resolve, reject, timeout });
       try {
         this.transport.send({ cmd, args, evt, nonce });
       } catch (error) {
+        clearTimeout(timeout);
         this._expecting.delete(nonce);
         reject(error);
       }
@@ -304,8 +319,14 @@ export class Client extends EventEmitter {
         const error = new Error(data.message ?? 'RPC error') as Error & { code?: number; data?: unknown };
         error.code = data.code;
         error.data = message.data;
+        if (request.timeout) {
+          clearTimeout(request.timeout);
+        }
         request.reject(error);
       } else {
+        if (request.timeout) {
+          clearTimeout(request.timeout);
+        }
         request.resolve(message.data);
       }
 
@@ -687,6 +708,13 @@ export class Client extends EventEmitter {
   }
 
   public async destroy(): Promise<void> {
+    const error = new Error('Discord RPC client was closed.');
+    for (const pending of this._expecting.values()) {
+      if (pending.timeout) {
+        clearTimeout(pending.timeout);
+      }
+      pending.reject(error);
+    }
     this._expecting.clear();
     this._connectPromise = undefined;
     await this.transport.close();

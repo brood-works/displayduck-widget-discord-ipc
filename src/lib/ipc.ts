@@ -16,6 +16,14 @@ const OPCodes = {
 } as const;
 const CONNECT_ATTEMPTS = 3;
 const CONNECT_RETRY_DELAY_MS = 250;
+const ENDPOINT_CACHE_TTL_MS = 15_000;
+
+let endpointCache: {
+  key: string;
+  endpoints: string[];
+  expiresAt: number;
+} | null = null;
+let endpointDiscoveryPromise: { key: string; promise: Promise<string[]> } | null = null;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -26,14 +34,6 @@ const getPlatform = (): 'win32' | 'unix' => {
     return 'win32';
   }
   return 'unix';
-};
-
-const getIPCPath = (id: number): string => {
-  if (getPlatform() === 'win32') {
-    return `\\\\.\\pipe\\discord-ipc-${id}`;
-  }
-
-  return `/tmp/discord-ipc-${id}`;
 };
 
 const getCandidateEndpoints = (client: Client): string[] => {
@@ -68,16 +68,38 @@ const hasCustomEndpoints = (client: Client): boolean => {
 
 const getReachableEndpoints = async (client: Client): Promise<string[]> => {
   const candidates = getCandidateEndpoints(client);
-  const checks = await Promise.all(
+  const cacheKey = candidates.join('\u0000');
+  if (endpointCache && endpointCache.key === cacheKey && endpointCache.expiresAt > Date.now()) {
+    return endpointCache.endpoints;
+  }
+
+  if (endpointDiscoveryPromise?.key === cacheKey) {
+    return endpointDiscoveryPromise.promise;
+  }
+
+  const promise = Promise.all(
     candidates.map(async (endpoint) => ({
       endpoint,
       exists: await ipcTransportEndpointExists(endpoint).catch(() => false),
     })),
-  );
+  ).then((checks) => {
+    const endpoints = checks
+      .filter((entry) => entry.exists)
+      .map((entry) => entry.endpoint);
+    endpointCache = {
+      key: cacheKey,
+      endpoints,
+      expiresAt: Date.now() + ENDPOINT_CACHE_TTL_MS,
+    };
+    return endpoints;
+  }).finally(() => {
+    if (endpointDiscoveryPromise?.key === cacheKey) {
+      endpointDiscoveryPromise = null;
+    }
+  });
+  endpointDiscoveryPromise = { key: cacheKey, promise };
 
-  return checks
-    .filter((entry) => entry.exists)
-    .map((entry) => entry.endpoint);
+  return promise;
 };
 
 const concatBytes = (left: Uint8Array, right: Uint8Array): Uint8Array => {
@@ -132,6 +154,7 @@ export class IPCTransport extends EventEmitter {
   public socket: ProxyIpcTransport | null = null;
   private buffer = new Uint8Array(0);
   private connectPromise: Promise<void> | null = null;
+  private connectionGeneration = 0;
 
   public constructor(client: Client) {
     super();
@@ -147,7 +170,8 @@ export class IPCTransport extends EventEmitter {
       return this.connectPromise;
     }
 
-    this.connectPromise = this.connectInternal().finally(() => {
+    const generation = this.connectionGeneration;
+    this.connectPromise = this.connectInternal(generation).finally(() => {
       this.connectPromise = null;
     });
     return this.connectPromise;
@@ -168,6 +192,7 @@ export class IPCTransport extends EventEmitter {
   }
 
   public async close(): Promise<void> {
+    this.connectionGeneration += 1;
     this.connectPromise = null;
     if (!this.socket) {
       this.buffer = new Uint8Array(0);
@@ -228,10 +253,13 @@ export class IPCTransport extends EventEmitter {
     }
   }
 
-  private async connectInternal(): Promise<void> {
+  private async connectInternal(generation: number): Promise<void> {
     this.buffer = new Uint8Array(0);
     const candidateEndpoints = getCandidateEndpoints(this.client);
     const reachableEndpoints = await getReachableEndpoints(this.client);
+    if (generation !== this.connectionGeneration) {
+      throw new Error('Discord IPC connection was cancelled.');
+    }
     const endpoints = reachableEndpoints.length > 0
       ? reachableEndpoints
       : (hasCustomEndpoints(this.client) ? candidateEndpoints : []);
@@ -265,6 +293,10 @@ export class IPCTransport extends EventEmitter {
               client_id: this.client.clientId,
             }),
           );
+          if (generation !== this.connectionGeneration) {
+            await transport.close().catch(() => undefined);
+            throw new Error('Discord IPC connection was cancelled.');
+          }
           this.socket = transport;
           return;
         } catch (error) {

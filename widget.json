@@ -1,7 +1,7 @@
 {
     "icon":"fab fa-discord",
     "name":"Discord IPC",
-    "version": "0.0.3-beta",
+    "version": "0.0.4-beta",
     "description":"Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
     "assets": [
         "./img"
@@ -34,6 +34,20 @@
                     "type": "select",
                     "options": [ "top-left", "top-center", "top-right", "center-left", "center-center", "center-right", "bottom-left", "bottom-center", "bottom-right" ],
                     "defaultValue": "top-left"
+                },
+                "participantSize": {
+                    "label": "Participant size",
+                    "subLabel": "The size of a (per) participant inside the widget",
+                    "type": "select",
+                    "options": [
+                        "Small (1 grid cell)",
+                        "Default (2x2 grid cells)",
+                        "Large (3x3 grid cells)",
+                        "XL (4x4 grid cells)",
+                        "XXL (5x5 grid cells)",
+                        "XXXL (6x6 grid cells)"
+                    ],
+                    "defaultValue": "Default (2x2 grid cells)"
                 },
                 "shadow": {
                     "label": "Shadows",
