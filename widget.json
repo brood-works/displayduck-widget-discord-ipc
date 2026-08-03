@@ -1,7 +1,7 @@
 {
-    "icon":"fab fa-discord",
+    "icon":"img/icon.png",
     "name":"Discord IPC",
-    "version": "0.0.5-beta",
+    "version": "0.0.6-beta",
     "description":"Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
     "assets": [
         "./img"
@@ -9,7 +9,7 @@
     "widgets": [
         {
             "category": "social",
-            "icon": "fa-brands fa-discord",
+            "icon": "img/icon.png",
             "id": "discord-ipc",
             "name": "Discord IPC",
             "description": "Displays participants in your current Discord voice channel or call.\n[warning]Requires Discord authorization[/warning]",
