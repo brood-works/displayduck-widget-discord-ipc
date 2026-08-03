@@ -1,1265 +1,925 @@
-const expressionCache = /* @__PURE__ */ new Map();
-const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-const compileExpression = (expression) => {
-  const cached = expressionCache.get(expression);
-  if (cached) {
-    return cached;
-  }
-  const transformed = expression.replace(/\bthis\b/g, "__item");
-  const fn = new Function("scope", `with (scope) { return (${transformed}); }`);
-  expressionCache.set(expression, fn);
-  return fn;
-};
-const evaluate = (expression, scope) => {
+const B = /* @__PURE__ */ new Map(), ct = (n) => String(n ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"), lt = (n) => {
+  const t = B.get(n);
+  if (t)
+    return t;
+  const e = n.replace(/\bthis\b/g, "__item"), i = new Function("scope", `with (scope) { return (${e}); }`);
+  return B.set(n, i), i;
+}, D = (n, t) => {
   try {
-    return compileExpression(expression)(scope);
+    return lt(n)(t);
   } catch {
     return "";
   }
-};
-const parseNodes = (template2, from = 0, stopAt) => {
-  const nodes = [];
-  let index = from;
-  while (index < template2.length) {
-    const start = template2.indexOf("{{", index);
-    if (start === -1) {
-      nodes.push({ type: "text", value: template2.slice(index) });
-      return { nodes, index: template2.length };
-    }
-    if (start > index) {
-      nodes.push({ type: "text", value: template2.slice(index, start) });
-    }
-    const close = template2.indexOf("}}", start + 2);
-    if (close === -1) {
-      nodes.push({ type: "text", value: template2.slice(start) });
-      return { nodes, index: template2.length };
-    }
-    const token = template2.slice(start + 2, close).trim();
-    index = close + 2;
-    if (token === "/if" || token === "/each") {
-      if (stopAt === token) {
-        return { nodes, index };
-      }
-      nodes.push({ type: "text", value: `{{${token}}}` });
+}, U = (n, t = 0, e) => {
+  const i = [];
+  let s = t;
+  for (; s < n.length; ) {
+    const r = n.indexOf("{{", s);
+    if (r === -1)
+      return i.push({ type: "text", value: n.slice(s) }), { nodes: i, index: n.length };
+    r > s && i.push({ type: "text", value: n.slice(s, r) });
+    const o = n.indexOf("}}", r + 2);
+    if (o === -1)
+      return i.push({ type: "text", value: n.slice(r) }), { nodes: i, index: n.length };
+    const c = n.slice(r + 2, o).trim();
+    if (s = o + 2, c === "/if" || c === "/each") {
+      if (e === c)
+        return { nodes: i, index: s };
+      i.push({ type: "text", value: `{{${c}}}` });
       continue;
     }
-    if (token.startsWith("#if ")) {
-      const child = parseNodes(template2, index, "/if");
-      nodes.push({
+    if (c.startsWith("#if ")) {
+      const a = U(n, s, "/if");
+      i.push({
         type: "if",
-        condition: token.slice(4).trim(),
-        children: child.nodes
-      });
-      index = child.index;
+        condition: c.slice(4).trim(),
+        children: a.nodes
+      }), s = a.index;
       continue;
     }
-    if (token.startsWith("#each ")) {
-      const child = parseNodes(template2, index, "/each");
-      nodes.push({
+    if (c.startsWith("#each ")) {
+      const a = U(n, s, "/each");
+      i.push({
         type: "each",
-        source: token.slice(6).trim(),
-        children: child.nodes
-      });
-      index = child.index;
+        source: c.slice(6).trim(),
+        children: a.nodes
+      }), s = a.index;
       continue;
     }
-    nodes.push({ type: "expr", value: token });
+    i.push({ type: "expr", value: c });
   }
-  return { nodes, index };
-};
-const renderNodes = (nodes, scope) => {
-  let output = "";
-  for (const node of nodes) {
-    if (node.type === "text") {
-      output += node.value;
+  return { nodes: i, index: s };
+}, x = (n, t) => {
+  let e = "";
+  for (const i of n) {
+    if (i.type === "text") {
+      e += i.value;
       continue;
     }
-    if (node.type === "expr") {
-      output += escapeHtml(evaluate(node.value, scope));
+    if (i.type === "expr") {
+      e += ct(D(i.value, t));
       continue;
     }
-    if (node.type === "if") {
-      if (Boolean(evaluate(node.condition, scope))) {
-        output += renderNodes(node.children, scope);
+    if (i.type === "if") {
+      D(i.condition, t) && (e += x(i.children, t));
+      continue;
+    }
+    const s = D(i.source, t);
+    if (Array.isArray(s))
+      for (const r of s) {
+        const o = Object.create(t);
+        o.__item = r, e += x(i.children, o);
       }
-      continue;
-    }
-    const items = evaluate(node.source, scope);
-    if (!Array.isArray(items)) {
-      continue;
-    }
-    for (const item of items) {
-      const childScope = Object.create(scope);
-      childScope.__item = item;
-      output += renderNodes(node.children, childScope);
-    }
   }
-  return output;
+  return e;
+}, ht = (n) => {
+  const t = U(n).nodes;
+  return (e) => x(t, e);
 };
-const createTemplateRenderer = (template2) => {
-  const parsed = parseNodes(template2).nodes;
-  return (scope) => renderNodes(parsed, scope);
-};
-typeof SuppressedError === "function" ? SuppressedError : function(error, suppressed, message) {
-  var e = new Error(message);
-  return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
-};
-function transformCallback(callback, once = false) {
-  return window.__TAURI_INTERNALS__.transformCallback(callback, once);
+function dt(n, t = !1) {
+  return window.__TAURI_INTERNALS__.transformCallback(n, t);
 }
-async function invoke(cmd, args = {}, options) {
-  return window.__TAURI_INTERNALS__.invoke(cmd, args, options);
+async function E(n, t = {}, e) {
+  return window.__TAURI_INTERNALS__.invoke(n, t, e);
 }
-function convertFileSrc(filePath, protocol = "asset") {
-  return window.__TAURI_INTERNALS__.convertFileSrc(filePath, protocol);
+function tt(n, t = "asset") {
+  return window.__TAURI_INTERNALS__.convertFileSrc(n, t);
 }
-var TauriEvent;
-(function(TauriEvent2) {
-  TauriEvent2["WINDOW_RESIZED"] = "tauri://resize";
-  TauriEvent2["WINDOW_MOVED"] = "tauri://move";
-  TauriEvent2["WINDOW_CLOSE_REQUESTED"] = "tauri://close-requested";
-  TauriEvent2["WINDOW_DESTROYED"] = "tauri://destroyed";
-  TauriEvent2["WINDOW_FOCUS"] = "tauri://focus";
-  TauriEvent2["WINDOW_BLUR"] = "tauri://blur";
-  TauriEvent2["WINDOW_SCALE_FACTOR_CHANGED"] = "tauri://scale-change";
-  TauriEvent2["WINDOW_THEME_CHANGED"] = "tauri://theme-changed";
-  TauriEvent2["WINDOW_CREATED"] = "tauri://window-created";
-  TauriEvent2["WINDOW_SUSPENDED"] = "tauri://suspended";
-  TauriEvent2["WINDOW_RESUMED"] = "tauri://resumed";
-  TauriEvent2["WEBVIEW_CREATED"] = "tauri://webview-created";
-  TauriEvent2["DRAG_ENTER"] = "tauri://drag-enter";
-  TauriEvent2["DRAG_OVER"] = "tauri://drag-over";
-  TauriEvent2["DRAG_DROP"] = "tauri://drag-drop";
-  TauriEvent2["DRAG_LEAVE"] = "tauri://drag-leave";
-})(TauriEvent || (TauriEvent = {}));
-async function _unlisten(event, eventId) {
-  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, eventId);
-  await invoke("plugin:event|unlisten", {
-    event,
-    eventId
+var G;
+(function(n) {
+  n.WINDOW_RESIZED = "tauri://resize", n.WINDOW_MOVED = "tauri://move", n.WINDOW_CLOSE_REQUESTED = "tauri://close-requested", n.WINDOW_DESTROYED = "tauri://destroyed", n.WINDOW_FOCUS = "tauri://focus", n.WINDOW_BLUR = "tauri://blur", n.WINDOW_SCALE_FACTOR_CHANGED = "tauri://scale-change", n.WINDOW_THEME_CHANGED = "tauri://theme-changed", n.WINDOW_CREATED = "tauri://window-created", n.WEBVIEW_CREATED = "tauri://webview-created", n.DRAG_ENTER = "tauri://drag-enter", n.DRAG_OVER = "tauri://drag-over", n.DRAG_DROP = "tauri://drag-drop", n.DRAG_LEAVE = "tauri://drag-leave";
+})(G || (G = {}));
+async function ut(n, t) {
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(n, t), await E("plugin:event|unlisten", {
+    event: n,
+    eventId: t
   });
 }
-async function listen(event, handler, options) {
-  var _a;
-  const target = (_a = void 0) !== null && _a !== void 0 ? _a : { kind: "Any" };
-  return invoke("plugin:event|listen", {
-    event,
-    target,
-    handler: transformCallback(handler)
-  }).then((eventId) => {
-    return async () => _unlisten(event, eventId);
-  });
+async function S(n, t, e) {
+  var i;
+  const s = (i = void 0) !== null && i !== void 0 ? i : { kind: "Any" };
+  return E("plugin:event|listen", {
+    event: n,
+    target: s,
+    handler: dt(t)
+  }).then((r) => async () => ut(n, r));
 }
-const OPEN_EVENT$1 = "pack-tcp-socket-open";
-const DATA_EVENT$1 = "pack-tcp-socket-data";
-const CLOSE_EVENT$1 = "pack-tcp-socket-close";
-const CONNECT_TIMEOUT_MS$1 = 5e3;
-const toBase64$1 = (bytes) => {
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return btoa(binary);
-};
-const fromBase64$1 = (value) => {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-};
-const normalizeBinary$1 = (value) => {
-  if (value instanceof Uint8Array) {
-    return value;
-  }
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value);
-  }
-  return Uint8Array.from(value);
-};
-const createSessionId$1 = () => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `tcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
-class RuntimeTcpSocket {
-  constructor(options, hasEventAccess) {
-    this.hasEventAccess = hasEventAccess;
-    this.isConnected = false;
-    this.connecting = null;
-    this.tauriListenersReady = null;
-    this.tauriUnlisteners = [];
-    this.listeners = {
+const ft = "pack-tcp-socket-open", pt = "pack-tcp-socket-data", Et = "pack-tcp-socket-close", gt = 5e3, mt = (n) => {
+  let t = "";
+  for (let e = 0; e < n.length; e += 1)
+    t += String.fromCharCode(n[e]);
+  return btoa(t);
+}, Tt = (n) => {
+  const t = atob(n), e = new Uint8Array(t.length);
+  for (let i = 0; i < t.length; i += 1)
+    e[i] = t.charCodeAt(i);
+  return e;
+}, _t = (n) => n instanceof Uint8Array ? n : n instanceof ArrayBuffer ? new Uint8Array(n) : Uint8Array.from(n), St = () => typeof crypto < "u" && typeof crypto.randomUUID == "function" ? crypto.randomUUID() : `tcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+class It {
+  constructor(t, e) {
+    this.hasLocalhostAccess = e, this.isConnected = !1, this.connecting = null, this.tauriListenersReady = null, this.tauriUnlisteners = [], this.listeners = {
       open: /* @__PURE__ */ new Set(),
       data: /* @__PURE__ */ new Set(),
       close: /* @__PURE__ */ new Set(),
       error: /* @__PURE__ */ new Set()
-    };
-    this.host = String(options.host ?? "").trim();
-    this.port = Number(options.port);
-    this.sessionId = createSessionId$1();
+    }, this.host = String(t.host ?? "").trim(), this.port = Number(t.port), this.sessionId = St();
   }
   get connected() {
     return this.isConnected;
   }
   async connect() {
-    if (!this.hasEventAccess) {
-      throw new Error("TCP socket access requires the Allow event access permission.");
-    }
-    if (this.isConnected) {
-      return;
-    }
-    if (this.connecting) {
-      return this.connecting;
-    }
-    if (!this.host || !Number.isInteger(this.port) || this.port < 1 || this.port > 65535) {
-      throw new Error("A valid TCP socket host and port are required.");
-    }
-    this.connecting = this.connectInternal();
-    try {
-      await this.connecting;
-    } finally {
-      this.connecting = null;
+    if (!this.hasLocalhostAccess)
+      throw new Error("TCP socket access requires the Allow localhost access permission.");
+    if (!this.isConnected) {
+      if (this.connecting)
+        return this.connecting;
+      if (!this.host || !Number.isInteger(this.port) || this.port < 1 || this.port > 65535)
+        throw new Error("A valid TCP socket host and port are required.");
+      this.connecting = this.connectInternal();
+      try {
+        await this.connecting;
+      } finally {
+        this.connecting = null;
+      }
     }
   }
-  async send(data) {
-    if (!this.isConnected) {
+  async send(t) {
+    if (!this.isConnected)
       throw new Error("TCP socket is not connected.");
-    }
-    await invoke("pack_tcp_socket_write", {
+    await E("pack_tcp_socket_write", {
       sessionId: this.sessionId,
-      dataBase64: toBase64$1(normalizeBinary$1(data))
+      dataBase64: mt(_t(t)),
+      allowLocalhostAccess: this.hasLocalhostAccess
     });
   }
-  async write(data) {
-    await this.send(data);
+  async write(t) {
+    await this.send(t);
   }
   async close() {
     try {
-      await invoke("pack_tcp_socket_disconnect", { sessionId: this.sessionId });
+      await E("pack_tcp_socket_disconnect", { sessionId: this.sessionId });
     } finally {
-      this.isConnected = false;
-      this.teardownTauriListeners();
+      this.isConnected = !1, this.teardownTauriListeners();
     }
   }
-  on(eventName, handler) {
-    this.listeners[eventName].add(handler);
-    return () => this.listeners[eventName].delete(handler);
+  on(t, e) {
+    return this.listeners[t].add(e), () => this.listeners[t].delete(e);
   }
   async connectInternal() {
-    await this.ensureTauriListeners();
-    await new Promise(async (resolve, reject) => {
-      let settled = false;
-      const timeoutId = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error(`TCP socket connection timed out for ${this.host}:${this.port}`));
-      }, CONNECT_TIMEOUT_MS$1);
-      const offOpen = this.on("open", () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      });
-      const offClose = this.on("close", (payload) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(new Error(payload.error ?? `TCP socket closed before opening.`));
-      });
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        offOpen();
-        offClose();
+    await this.ensureTauriListeners(), await new Promise(async (t, e) => {
+      let i = !1;
+      const s = setTimeout(() => {
+        i || (i = !0, c(), e(new Error(`TCP socket connection timed out for ${this.host}:${this.port}`)));
+      }, gt), r = this.on("open", () => {
+        i || (i = !0, c(), t());
+      }), o = this.on("close", (a) => {
+        i || (i = !0, c(), e(new Error(a.error ?? "TCP socket closed before opening.")));
+      }), c = () => {
+        clearTimeout(s), r(), o();
       };
       try {
-        await invoke("pack_tcp_socket_connect", {
+        await E("pack_tcp_socket_connect", {
           sessionId: this.sessionId,
           host: this.host,
           port: this.port,
-          allowEventAccess: this.hasEventAccess
+          allowLocalhostAccess: this.hasLocalhostAccess
         });
-      } catch (error) {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
+      } catch (a) {
+        if (i) return;
+        i = !0, c(), e(a);
       }
     });
   }
   async ensureTauriListeners() {
-    if (this.tauriListenersReady) {
-      return this.tauriListenersReady;
-    }
-    this.tauriListenersReady = (async () => {
+    return this.tauriListenersReady ? this.tauriListenersReady : (this.tauriListenersReady = (async () => {
       this.tauriUnlisteners = [
-        await listen(OPEN_EVENT$1, (event) => {
-          if (event.payload.sessionId !== this.sessionId) return;
-          this.isConnected = true;
-          this.emit("open", {
+        await S(ft, (t) => {
+          t.payload.sessionId === this.sessionId && (this.isConnected = !0, this.emit("open", {
             host: this.host,
             port: this.port
-          });
+          }));
         }),
-        await listen(DATA_EVENT$1, (event) => {
-          if (event.payload.sessionId !== this.sessionId) return;
-          try {
-            this.emit("data", fromBase64$1(event.payload.dataBase64));
-          } catch (error) {
-            this.emit("error", {
-              host: this.host,
-              port: this.port,
-              error: error instanceof Error ? error.message : "Invalid TCP socket data."
-            });
-          }
+        await S(pt, (t) => {
+          if (t.payload.sessionId === this.sessionId)
+            try {
+              this.emit("data", Tt(t.payload.dataBase64));
+            } catch (e) {
+              this.emit("error", {
+                host: this.host,
+                port: this.port,
+                error: e instanceof Error ? e.message : "Invalid TCP socket data."
+              });
+            }
         }),
-        await listen(CLOSE_EVENT$1, (event) => {
-          if (event.payload.sessionId !== this.sessionId) return;
-          this.isConnected = false;
-          if (event.payload.error) {
-            this.emit("error", {
-              host: this.host,
-              port: this.port,
-              error: event.payload.error
-            });
-          }
-          this.emit("close", {
+        await S(Et, (t) => {
+          t.payload.sessionId === this.sessionId && (this.isConnected = !1, t.payload.error && this.emit("error", {
             host: this.host,
             port: this.port,
-            error: event.payload.error
-          });
+            error: t.payload.error
+          }), this.emit("close", {
+            host: this.host,
+            port: this.port,
+            error: t.payload.error
+          }));
         })
       ];
-    })();
-    return this.tauriListenersReady;
+    })(), this.tauriListenersReady);
   }
   teardownTauriListeners() {
-    for (const unlisten of this.tauriUnlisteners) {
+    for (const t of this.tauriUnlisteners)
       try {
-        unlisten();
+        t();
       } catch {
       }
-    }
-    this.tauriUnlisteners = [];
-    this.tauriListenersReady = null;
+    this.tauriUnlisteners = [], this.tauriListenersReady = null;
   }
-  emit(eventName, payload) {
-    for (const listener of this.listeners[eventName]) {
-      listener(payload);
-    }
+  emit(t, e) {
+    for (const i of this.listeners[t])
+      i(e);
   }
 }
-const OPEN_EVENT = "pack-ipc-transport-open";
-const DATA_EVENT = "pack-ipc-transport-data";
-const CLOSE_EVENT = "pack-ipc-transport-close";
-const CONNECT_TIMEOUT_MS = 5e3;
-const toBase64 = (bytes) => {
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return btoa(binary);
-};
-const fromBase64 = (value) => {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-};
-const normalizeBinary = (value) => {
-  if (value instanceof Uint8Array) {
-    return value;
-  }
-  if (value instanceof ArrayBuffer) {
-    return new Uint8Array(value);
-  }
-  return Uint8Array.from(value);
-};
-const createSessionId = () => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `ipc-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
-const logPrefix = (sessionId, endpoint) => `[IpcTransport session=${sessionId} endpoint=${endpoint}]`;
-const normalizeTransportErrorMessage = (value) => {
-  if (!value) {
+const yt = "pack-ipc-transport-open", Ct = "pack-ipc-transport-data", At = "pack-ipc-transport-close", wt = 5e3, W = (n) => {
+  let t = "";
+  for (let e = 0; e < n.length; e += 1)
+    t += String.fromCharCode(n[e]);
+  return btoa(t);
+}, bt = (n) => {
+  const t = atob(n), e = new Uint8Array(t.length);
+  for (let i = 0; i < t.length; i += 1)
+    e[i] = t.charCodeAt(i);
+  return e;
+}, q = (n) => n instanceof Uint8Array ? n : n instanceof ArrayBuffer ? new Uint8Array(n) : Uint8Array.from(n), Rt = (n, t) => {
+  let e = 2166136261;
+  for (const i of `${n}\0${t}`)
+    e ^= i.charCodeAt(0), e = Math.imul(e, 16777619);
+  return `ipc-${(e >>> 0).toString(16)}`;
+}, w = (n, t) => `[IpcTransport session=${n} endpoint=${t}]`, kt = (n) => {
+  if (!n)
     return "";
+  if (typeof n == "string")
+    return n.trim().toLowerCase();
+  if (n instanceof Error)
+    return n.message.trim().toLowerCase();
+  if (typeof n == "object" && n && "error" in n) {
+    const t = n.error;
+    return typeof t == "string" ? t.trim().toLowerCase() : "";
   }
-  if (typeof value === "string") {
-    return value.trim().toLowerCase();
-  }
-  if (value instanceof Error) {
-    return value.message.trim().toLowerCase();
-  }
-  if (typeof value === "object" && value && "error" in value) {
-    const error = value.error;
-    return typeof error === "string" ? error.trim().toLowerCase() : "";
-  }
-  return String(value).trim().toLowerCase();
+  return String(n).trim().toLowerCase();
+}, L = (n) => {
+  const t = kt(n);
+  return t.includes("no such file or directory") || t.includes("os error 2") || t.includes("endpoint is not available") || t.includes("not found");
 };
-const isMissingEndpointError = (value) => {
-  const message = normalizeTransportErrorMessage(value);
-  return message.includes("no such file or directory") || message.includes("os error 2") || message.includes("endpoint is not available") || message.includes("not found");
-};
-class IpcTransport {
-  constructor(options) {
-    this.connected = false;
-    this.listeners = {
+class vt {
+  constructor(t) {
+    this.connected = !1, this.listeners = {
       open: /* @__PURE__ */ new Set(),
       data: /* @__PURE__ */ new Set(),
       close: /* @__PURE__ */ new Set()
-    };
-    this.tauriListenersReady = null;
-    this.tauriUnlisteners = [];
-    this.endpoint = String(options.endpoint ?? "").trim();
-    this.sessionId = String(options.sessionId ?? "").trim() || createSessionId();
+    }, this.tauriListenersReady = null, this.tauriUnlisteners = [], this.endpoint = String(t.endpoint ?? "").trim();
+    const e = String(t.scope ?? "default").trim() || "default";
+    this.sessionId = String(t.sessionId ?? "").trim() || Rt(e, this.endpoint), this.allowLocalhostAccess = t.allowLocalhostAccess === !0;
   }
   async connect() {
-    await this.connectWithInitialWrite();
+    return this.connectWithInitialWrite();
   }
-  async connectWithInitialWrite(initialData) {
-    if (!this.endpoint) {
+  async connectWithInitialWrite(t) {
+    if (!this.endpoint)
       throw new Error("Missing IPC endpoint.");
-    }
-    await this.ensureTauriListeners();
-    await new Promise(async (resolve, reject) => {
-      let settled = false;
-      const timeoutId = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        reject(new Error(`IPC connect timed out for endpoint ${this.endpoint}`));
-      }, CONNECT_TIMEOUT_MS);
-      const offOpen = this.on("open", () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve();
-      });
-      const offClose = this.on("close", (payload) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        if (!isMissingEndpointError(payload.error)) {
-          console.error(
-            `${logPrefix(this.sessionId, this.endpoint)} connect close-before-open error=${payload.error ?? "<none>"}`
-          );
-        }
-        reject(new Error(payload.error ?? `IPC transport closed for endpoint ${this.endpoint}`));
-      });
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        offOpen();
-        offClose();
+    return await this.ensureTauriListeners(), new Promise(async (e, i) => {
+      let s = !1;
+      const r = setTimeout(() => {
+        s || (s = !0, a(), i(new Error(`IPC connect timed out for endpoint ${this.endpoint}`)));
+      }, wt), o = this.on("open", () => {
+        s || (s = !0, a(), e(!1));
+      }), c = this.on("close", (d) => {
+        s || (s = !0, a(), L(d.error) || console.error(
+          `${w(this.sessionId, this.endpoint)} connect close-before-open error=${d.error ?? "<none>"}`
+        ), i(new Error(d.error ?? `IPC transport closed for endpoint ${this.endpoint}`)));
+      }), a = () => {
+        clearTimeout(r), o(), c();
       };
       try {
-        await invoke("pack_ipc_transport_connect", {
+        const d = await E("pack_ipc_transport_connect", {
           sessionId: this.sessionId,
           endpoint: this.endpoint,
-          initialDataBase64: initialData ? toBase64(normalizeBinary(initialData)) : null
+          initialDataBase64: t ? W(q(t)) : null,
+          allowLocalhostAccess: this.allowLocalhostAccess
         });
-      } catch (error) {
-        if (settled) {
+        !s && d === !0 && (s = !0, a(), this.connected = !0, this.emit("open", {
+          sessionId: this.sessionId,
+          endpoint: this.endpoint
+        }), e(!0));
+      } catch (d) {
+        if (s)
           return;
-        }
-        settled = true;
-        cleanup();
-        if (!isMissingEndpointError(error)) {
-          console.error(`${logPrefix(this.sessionId, this.endpoint)} invoke connect failed`, error);
-        }
-        reject(error);
+        s = !0, a(), L(d) || console.error(`${w(this.sessionId, this.endpoint)} invoke connect failed`, d), i(d);
       }
     });
   }
-  async write(data) {
-    const bytes = normalizeBinary(data);
+  async write(t) {
+    const e = q(t);
     try {
-      await invoke("pack_ipc_transport_write", {
+      await E("pack_ipc_transport_write", {
         sessionId: this.sessionId,
-        dataBase64: toBase64(bytes)
+        dataBase64: W(e),
+        allowLocalhostAccess: this.allowLocalhostAccess
       });
-    } catch (error) {
-      this.connected = false;
-      const message = error instanceof Error ? error.message : typeof error === "string" ? error : "IPC transport write failed";
-      console.error(`${logPrefix(this.sessionId, this.endpoint)} write failed error=${message}`, error);
-      this.emit("close", {
+    } catch (i) {
+      this.connected = !1;
+      const s = i instanceof Error ? i.message : typeof i == "string" ? i : "IPC transport write failed";
+      throw console.error(`${w(this.sessionId, this.endpoint)} write failed error=${s}`, i), this.emit("close", {
         sessionId: this.sessionId,
         endpoint: this.endpoint,
-        error: message
-      });
-      throw error;
+        error: s
+      }), i;
     }
   }
-  async send(data) {
-    await this.write(data);
+  async send(t) {
+    await this.write(t);
   }
   async close() {
     try {
-      await invoke("pack_ipc_transport_disconnect", {
+      await E("pack_ipc_transport_disconnect", {
         sessionId: this.sessionId
       });
     } finally {
-      this.connected = false;
-      this.teardownTauriListeners();
+      this.connected = !1, this.teardownTauriListeners();
     }
   }
   async destroy() {
     await this.close();
   }
-  on(eventName, handler) {
-    this.listeners[eventName].add(handler);
-    return () => {
-      this.listeners[eventName].delete(handler);
+  on(t, e) {
+    return this.listeners[t].add(e), () => {
+      this.listeners[t].delete(e);
     };
   }
   async ensureTauriListeners() {
-    if (this.tauriListenersReady) {
-      return this.tauriListenersReady;
-    }
-    this.tauriListenersReady = (async () => {
+    return this.tauriListenersReady ? this.tauriListenersReady : (this.tauriListenersReady = (async () => {
       this.tauriUnlisteners = [
-        await listen(OPEN_EVENT, (event) => {
-          const payload = event.payload;
-          if (payload.sessionId !== this.sessionId) {
-            return;
-          }
-          this.connected = true;
-          this.emit("open", payload);
+        await S(yt, (t) => {
+          const e = t.payload;
+          e.sessionId === this.sessionId && (this.connected = !0, this.emit("open", e));
         }),
-        await listen(DATA_EVENT, (event) => {
-          const payload = event.payload;
-          if (payload.sessionId !== this.sessionId) {
-            return;
-          }
-          this.emit("data", fromBase64(payload.dataBase64));
+        await S(Ct, (t) => {
+          const e = t.payload;
+          e.sessionId === this.sessionId && this.emit("data", bt(e.dataBase64));
         }),
-        await listen(CLOSE_EVENT, (event) => {
-          const payload = event.payload;
-          if (payload.sessionId !== this.sessionId) {
-            return;
-          }
-          this.connected = false;
-          if (!isMissingEndpointError(payload.error)) {
-            console.error(`${logPrefix(this.sessionId, this.endpoint)} event close`, payload);
-          }
-          this.emit("close", payload);
+        await S(At, (t) => {
+          const e = t.payload;
+          e.sessionId === this.sessionId && (this.connected = !1, L(e.error) || console.error(`${w(this.sessionId, this.endpoint)} event close`, e), this.emit("close", e));
         })
       ];
-    })();
-    return this.tauriListenersReady;
+    })(), this.tauriListenersReady);
   }
   teardownTauriListeners() {
-    for (const unlisten of this.tauriUnlisteners) {
+    for (const t of this.tauriUnlisteners)
       try {
-        unlisten();
+        t();
       } catch {
       }
-    }
-    this.tauriUnlisteners = [];
-    this.tauriListenersReady = null;
+    this.tauriUnlisteners = [], this.tauriListenersReady = null;
   }
-  emit(eventName, payload) {
-    for (const listener of this.listeners[eventName]) {
-      listener(payload);
-    }
+  emit(t, e) {
+    for (const i of this.listeners[t])
+      i(e);
   }
 }
-const ipcTransportEndpointExists = async (endpoint) => {
-  const normalized = String(endpoint ?? "").trim();
-  if (!normalized) {
-    return false;
-  }
-  return invoke("pack_ipc_transport_endpoint_exists", {
-    endpoint: normalized
+const et = async (n, t = !1) => {
+  const e = String(n ?? "").trim();
+  return e ? E("pack_ipc_transport_endpoint_exists", {
+    endpoint: e,
+    allowLocalhostAccess: t
+  }) : !1;
+}, Ot = (n) => {
+  if (typeof n != "function")
+    return !1;
+  const t = n;
+  return t._isSignal === !0 && typeof t.set == "function" && typeof t.subscribe == "function";
+}, $ = (n) => {
+  let t = n;
+  const e = /* @__PURE__ */ new Set(), i = (() => t);
+  return i._isSignal = !0, i.set = (s) => {
+    if (!Object.is(t, s)) {
+      t = s;
+      for (const r of e)
+        r(t);
+    }
+  }, i.update = (s) => {
+    i.set(s(t));
+  }, i.subscribe = (s) => (e.add(s), () => e.delete(s)), i;
+}, Dt = (n, t = "") => E("controller_widget_focus_view", {
+  configuredWidgetId: n,
+  requestId: t
+}), Lt = async (n, t) => {
+  const e = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let i = null, s = null;
+  const r = new Promise((o) => {
+    s = o;
   });
-};
-const isSignal = (value) => {
-  if (typeof value !== "function") {
-    return false;
+  try {
+    return i = await S(
+      "displayduck-widget-focus-state-response",
+      (o) => {
+        o.payload.requestId !== e || o.payload.configuredWidgetId !== n || s?.(o.payload.focused === !0);
+      }
+    ), await E("controller_widget_get_focus_state", {
+      configuredWidgetId: n,
+      focusRequestId: t,
+      requestId: e
+    }), await Promise.race([
+      r,
+      new Promise((o) => setTimeout(() => o(!1), 1e3))
+    ]);
+  } finally {
+    i?.();
   }
-  const candidate = value;
-  return candidate._isSignal === true && typeof candidate.set === "function" && typeof candidate.subscribe === "function";
-};
-const signal = (initialValue) => {
-  let current = initialValue;
-  const subscribers = /* @__PURE__ */ new Set();
-  const read = (() => current);
-  read._isSignal = true;
-  read.set = (value) => {
-    if (Object.is(current, value)) {
-      return;
-    }
-    current = value;
-    for (const subscriber of subscribers) {
-      subscriber(current);
-    }
-  };
-  read.update = (updater) => {
-    read.set(updater(current));
-  };
-  read.subscribe = (subscriber) => {
-    subscribers.add(subscriber);
-    return () => subscribers.delete(subscriber);
-  };
-  return read;
-};
-const focusWidgetView = (configuredWidgetId) => invoke("controller_widget_focus_view", { configuredWidgetId });
-const bindSignals = (source, onChange) => {
-  const unsubscribers = [];
-  for (const key of Object.keys(source)) {
-    const value = source[key];
-    if (isSignal(value)) {
-      unsubscribers.push(value.subscribe(() => onChange()));
-    }
+}, Nt = (n, t, e) => E("controller_widget_set_focus_requirement", {
+  configuredWidgetId: n,
+  required: t,
+  requestId: e
+}), Pt = (n, t) => {
+  const e = [];
+  for (const i of Object.keys(n)) {
+    const s = n[i];
+    Ot(s) && e.push(s.subscribe(() => t()));
   }
   return () => {
-    for (const unsubscribe of unsubscribers) {
-      unsubscribe();
-    }
+    for (const i of e)
+      i();
   };
-};
-const createScope = (instance, payload) => {
-  return new Proxy(
-    { payload },
-    {
-      get(target, property) {
-        if (typeof property !== "string") {
-          return void 0;
-        }
-        if (property in target) {
-          return target[property];
-        }
-        const value = instance[property];
-        if (typeof value === "function") {
-          return value.bind(instance);
-        }
-        return value;
-      },
-      has(target, property) {
-        if (typeof property !== "string") {
-          return false;
-        }
-        return property in target || property in instance;
-      }
+}, Ut = (n, t) => new Proxy(
+  { payload: t },
+  {
+    get(e, i) {
+      if (typeof i != "string")
+        return;
+      if (i in e)
+        return e[i];
+      const s = n[i];
+      return typeof s == "function" ? s.bind(n) : s;
+    },
+    has(e, i) {
+      return typeof i != "string" ? !1 : i in e || i in n;
     }
-  );
-};
-const RELATIVE_URL_ATTRIBUTES = ["src", "href", "poster"];
-const PACK_INSTALL_PATH_PLACEHOLDER = "{{pack-install-path}}/";
-const ASSETS_PLACEHOLDER = "{{ASSETS}}";
-const isExternalAssetUrl = (value) => {
-  const trimmed = value.trim();
-  return trimmed.length === 0 || trimmed.startsWith("data:") || trimmed.startsWith("blob:") || trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("file:") || trimmed.startsWith("asset:") || trimmed.startsWith("mailto:") || trimmed.startsWith("tel:") || trimmed.startsWith("javascript:") || trimmed.startsWith("//") || trimmed.startsWith("/") || trimmed.startsWith("#");
-};
-const extractWidgetRelativePath = (value) => {
-  const trimmed = value.trim();
-  if (!trimmed) {
+  }
+), xt = ["src", "href", "poster"], Vt = "{{pack-install-path}}/", z = "{{ASSETS}}", Mt = (n) => {
+  const t = n.trim();
+  return t.length === 0 || t.startsWith("data:") || t.startsWith("blob:") || t.startsWith("http://") || t.startsWith("https://") || t.startsWith("file:") || t.startsWith("asset:") || t.startsWith("mailto:") || t.startsWith("tel:") || t.startsWith("javascript:") || t.startsWith("//") || t.startsWith("/") || t.startsWith("#");
+}, Bt = (n) => {
+  const t = n.trim();
+  if (!t)
     return null;
-  }
-  if (!isExternalAssetUrl(trimmed)) {
-    return trimmed.replace(/^\.\/+/, "").replace(/^\/+/, "");
-  }
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+  if (!Mt(t))
+    return t.replace(/^\.\/+/, "").replace(/^\/+/, "");
+  if (t.startsWith("http://") || t.startsWith("https://"))
     try {
-      const url = new URL(trimmed);
-      if (url.origin === window.location.origin) {
-        return `${url.pathname}${url.search}${url.hash}`.replace(/^\/+/, "");
-      }
+      const e = new URL(t);
+      if (e.origin === window.location.origin)
+        return `${e.pathname}${e.search}${e.hash}`.replace(/^\/+/, "");
     } catch {
       return null;
     }
-  }
   return null;
-};
-const normalizeJoinedAssetPath = (widgetDirectory, relativePath) => {
-  const normalizedBase = widgetDirectory.replaceAll("\\", "/").replace(/\/+$/, "");
-  const combined = `${normalizedBase}/${relativePath.trim()}`;
-  const segments = combined.split("/");
-  const resolved = [];
-  for (const segment of segments) {
-    if (!segment || segment === ".") {
-      if (resolved.length === 0 && combined.startsWith("/")) {
-        resolved.push("");
-      }
+}, Gt = (n, t) => {
+  const e = n.replaceAll("\\", "/").replace(/\/+$/, ""), i = `${e}/${t.trim()}`, s = i.split("/"), r = [];
+  for (const o of s) {
+    if (!o || o === ".") {
+      r.length === 0 && i.startsWith("/") && r.push("");
       continue;
     }
-    if (segment === "..") {
-      if (resolved.length > 1 || resolved.length === 1 && resolved[0] !== "") {
-        resolved.pop();
-      }
+    if (o === "..") {
+      (r.length > 1 || r.length === 1 && r[0] !== "") && r.pop();
       continue;
     }
-    resolved.push(segment);
+    r.push(o);
   }
-  return resolved.join("/") || normalizedBase;
-};
-const resolveAssetUrl = (widgetDirectory, value) => {
-  const relativePath = extractWidgetRelativePath(value);
-  if (!widgetDirectory || !relativePath) {
-    return value;
-  }
+  return r.join("/") || e;
+}, k = (n, t) => {
+  const e = Bt(t);
+  if (!n || !e)
+    return t;
   try {
-    return convertFileSrc(normalizeJoinedAssetPath(widgetDirectory, relativePath));
+    return tt(Gt(n, e));
   } catch {
-    return value;
+    return t;
   }
-};
-const resolveAssetsBaseUrl = (widgetDirectory) => {
-  const normalizedDirectory = widgetDirectory.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  if (!normalizedDirectory) {
+}, Wt = (n) => {
+  const t = n.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  if (!t)
     return "";
-  }
   try {
-    return convertFileSrc(normalizedDirectory);
+    return tt(t);
   } catch {
-    return normalizedDirectory;
+    return t;
   }
-};
-const rewriteSrcset = (value, widgetDirectory) => {
-  return value.split(",").map((entry) => {
-    const trimmed = entry.trim();
-    if (!trimmed) {
-      return trimmed;
-    }
-    const [url, descriptor] = trimmed.split(/\s+/, 2);
-    const nextUrl = resolveAssetUrl(widgetDirectory, url);
-    return descriptor ? `${nextUrl} ${descriptor}` : nextUrl;
-  }).join(", ");
-};
-const rewriteInlineStyleUrls = (value, widgetDirectory) => {
-  return value.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, quote, urlValue) => {
-    const nextUrl = resolveAssetUrl(widgetDirectory, urlValue);
-    if (nextUrl === urlValue) {
-      return full;
-    }
-    return `url("${nextUrl}")`;
-  });
-};
-const rewriteElementAssetUrls = (element, widgetDirectory) => {
-  for (const attribute of RELATIVE_URL_ATTRIBUTES) {
-    const currentValue = element.getAttribute(attribute);
-    if (!currentValue) {
+}, qt = (n, t) => n.split(",").map((e) => {
+  const i = e.trim();
+  if (!i)
+    return i;
+  const [s, r] = i.split(/\s+/, 2), o = k(t, s);
+  return r ? `${o} ${r}` : o;
+}).join(", "), $t = (n, t) => n.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (e, i, s) => {
+  const r = k(t, s);
+  return r === s ? e : `url("${r}")`;
+}), V = (n, t) => {
+  for (const s of xt) {
+    const r = n.getAttribute(s);
+    if (!r)
       continue;
-    }
-    const nextValue = resolveAssetUrl(widgetDirectory, currentValue);
-    if (nextValue !== currentValue) {
-      element.setAttribute(attribute, nextValue);
-    }
+    const o = k(t, r);
+    o !== r && n.setAttribute(s, o);
   }
-  const currentSrcset = element.getAttribute("srcset");
-  if (currentSrcset) {
-    const nextSrcset = rewriteSrcset(currentSrcset, widgetDirectory);
-    if (nextSrcset !== currentSrcset) {
-      element.setAttribute("srcset", nextSrcset);
-    }
+  const e = n.getAttribute("srcset");
+  if (e) {
+    const s = qt(e, t);
+    s !== e && n.setAttribute("srcset", s);
   }
-  const currentStyle = element.getAttribute("style");
-  if (currentStyle) {
-    const nextStyle = rewriteInlineStyleUrls(currentStyle, widgetDirectory);
-    if (nextStyle !== currentStyle) {
-      element.setAttribute("style", nextStyle);
-    }
+  const i = n.getAttribute("style");
+  if (i) {
+    const s = $t(i, t);
+    s !== i && n.setAttribute("style", s);
   }
-};
-const rewriteTreeAssetUrls = (root, widgetDirectory) => {
-  if (!widgetDirectory) {
-    return;
+}, H = (n, t) => {
+  if (t) {
+    n instanceof Element && V(n, t);
+    for (const e of Array.from(n.querySelectorAll("*")))
+      V(e, t);
   }
-  if (root instanceof Element) {
-    rewriteElementAssetUrls(root, widgetDirectory);
-  }
-  for (const element of Array.from(root.querySelectorAll("*"))) {
-    rewriteElementAssetUrls(element, widgetDirectory);
-  }
-};
-const rewriteInstallPathPlaceholders = (input, widgetDirectory) => {
-  if (!widgetDirectory) {
-    return input;
-  }
-  let output = input;
-  const assetsBaseUrl = resolveAssetsBaseUrl(widgetDirectory);
-  if (assetsBaseUrl && output.includes(ASSETS_PLACEHOLDER)) {
-    output = output.replaceAll(ASSETS_PLACEHOLDER, assetsBaseUrl);
-  }
-  if (!output.includes(PACK_INSTALL_PATH_PLACEHOLDER)) {
-    return output;
-  }
-  return output.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (full, relativePath) => {
-    return resolveAssetUrl(widgetDirectory, relativePath);
-  });
-};
-const createWidgetClass = (WidgetImpl, options) => {
-  return class RuntimeWidget {
-    constructor({
-      mount,
-      payload,
-      setLoading
-    }) {
-      this.cleanups = [];
-      this.widgetDirectory = "";
-      this.mount = mount;
-      this.payload = payload ?? {};
-      this.setLoading = typeof setLoading === "function" ? setLoading : (() => {
-      });
-      this.assetObserver = new MutationObserver((mutations) => {
-        if (!this.widgetDirectory) {
-          return;
-        }
-        for (const mutation of mutations) {
-          if (mutation.type === "attributes" && mutation.target instanceof Element) {
-            rewriteElementAssetUrls(mutation.target, this.widgetDirectory);
+}, Y = (n, t) => {
+  if (!t)
+    return n;
+  let e = n;
+  const i = Wt(t);
+  return i && e.includes(z) && (e = e.replaceAll(z, i)), e.includes(Vt) ? e.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (s, r) => k(t, r)) : e;
+}, zt = (n) => {
+  const t = /@font-face\s*\{[^{}]*\}/gi, e = n.match(t)?.join(`
+`) ?? "";
+  return {
+    scopedStyles: e ? n.replace(t, "") : n,
+    fontStyles: e
+  };
+}, Ht = (n, t) => class {
+  constructor({
+    mount: i,
+    payload: s,
+    setLoading: r
+  }) {
+    this.cleanups = [], this.hasRendered = !1, this.renderScheduled = !1, this.destroyed = !1, this.globalFontStyle = null, this.focusRequestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`, this.widgetDirectory = "", this.mount = i, this.payload = s ?? {}, this.setLoading = typeof r == "function" ? r : (() => {
+    }), this.assetObserver = new MutationObserver((o) => {
+      if (this.widgetDirectory)
+        for (const c of o) {
+          if (c.type === "attributes" && c.target instanceof Element) {
+            V(c.target, this.widgetDirectory);
             continue;
           }
-          for (const node of Array.from(mutation.addedNodes)) {
-            if (node instanceof Element) {
-              rewriteTreeAssetUrls(node, this.widgetDirectory);
-            }
-          }
+          for (const a of Array.from(c.addedNodes))
+            a instanceof Element && H(a, this.widgetDirectory);
         }
-      });
-      this.logic = new WidgetImpl({
-        mount,
-        payload: this.payload,
-        setLoading: (loading) => this.setLoading(Boolean(loading)),
-        focusWidgetView: () => focusWidgetView(
-          String(this.payload?.configuredWidgetId ?? "").trim()
-        ),
-        createTcpSocket: (options2) => new RuntimeTcpSocket(
-          options2,
-          this.hasEventAccessPermission()
-        ),
-        on: (eventName, selector, handler) => this.on(eventName, selector, handler)
-      });
-      this.cleanupSignalSubscriptions = bindSignals(this.logic, () => this.render());
-      this.assetObserver.observe(this.mount, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        attributeFilter: ["src", "href", "poster", "srcset", "style"]
-      });
+    }), this.logic = new n({
+      mount: i,
+      payload: this.payload,
+      setLoading: (o) => this.setLoading(!!o),
+      focusWidgetView: () => Dt(
+        String(this.payload?.configuredWidgetId ?? "").trim(),
+        this.focusRequestId
+      ),
+      isWidgetViewFocused: () => Lt(
+        String(this.payload?.configuredWidgetId ?? "").trim(),
+        this.focusRequestId
+      ),
+      setRequireFocus: (o) => Nt(
+        String(this.payload?.configuredWidgetId ?? "").trim(),
+        !!o,
+        this.focusRequestId
+      ),
+      createTcpSocket: (o) => new It(
+        o,
+        this.hasLocalhostAccessPermission()
+      ),
+      on: (o, c, a) => this.on(o, c, a)
+    }), this.cleanupSignalSubscriptions = Pt(this.logic, () => this.scheduleRender()), this.assetObserver.observe(this.mount, {
+      subtree: !0,
+      childList: !0,
+      attributes: !0,
+      attributeFilter: ["src", "href", "poster", "srcset", "style"]
+    });
+  }
+  onInit() {
+    this.render(), this.logic.onInit?.();
+  }
+  onUpdate(i) {
+    this.payload = i ?? {}, this.logic.onUpdate?.(this.payload), this.render();
+  }
+  onDestroy() {
+    for (this.destroyed = !0, this.renderScheduled = !1, this.globalFontStyle?.remove(), this.globalFontStyle = null, this.cleanupSignalSubscriptions(); this.cleanups.length > 0; )
+      this.cleanups.pop()?.();
+    this.assetObserver.disconnect(), this.logic.onDestroy?.(), this.mount.innerHTML = "", this.hasRendered = !1;
+  }
+  hasLocalhostAccessPermission() {
+    const i = this.payload?.config;
+    return !!(i && typeof i == "object" && i.allowEventAccess === !0);
+  }
+  render() {
+    this.renderScheduled = !1;
+    const i = Ut(this.logic, this.payload);
+    this.widgetDirectory = String(
+      this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
+    ).trim();
+    const s = Y(t.template, this.widgetDirectory), r = Y(t.styles, this.widgetDirectory), { scopedStyles: o, fontStyles: c } = zt(r);
+    this.syncGlobalFontStyle(c);
+    const d = ht(s)(i), u = `<style>${o}</style>${d}`;
+    this.hasRendered ? this.reconcileMarkup(u) : (this.mount.innerHTML = u, this.hasRendered = !0), this.mount.setAttribute("data-displayduck-render-empty", d.trim().length === 0 ? "true" : "false"), H(this.mount, this.widgetDirectory), this.logic.afterRender?.();
+  }
+  syncGlobalFontStyle(i) {
+    if (!i) {
+      this.globalFontStyle?.remove(), this.globalFontStyle = null;
+      return;
     }
-    onInit() {
-      this.render();
-      this.logic.onInit?.();
+    this.globalFontStyle || (this.globalFontStyle = this.mount.ownerDocument.createElement("style"), this.globalFontStyle.dataset.displayduckPackFonts = "true", this.mount.ownerDocument.head.appendChild(this.globalFontStyle)), this.globalFontStyle.textContent !== i && (this.globalFontStyle.textContent = i);
+  }
+  scheduleRender() {
+    this.renderScheduled || this.destroyed || (this.renderScheduled = !0, queueMicrotask(() => {
+      !this.destroyed && this.renderScheduled && this.render();
+    }));
+  }
+  reconcileMarkup(i) {
+    const s = document.createElement("div");
+    s.innerHTML = i, this.reconcileChildren(this.mount, s);
+  }
+  reconcileChildren(i, s) {
+    const r = Array.from(i.childNodes), o = Array.from(s.childNodes), c = Math.min(r.length, o.length);
+    for (let a = 0; a < c; a += 1)
+      this.reconcileNode(r[a], o[a]);
+    for (let a = c; a < o.length; a += 1)
+      i.appendChild(o[a].cloneNode(!0));
+    for (let a = r.length - 1; a >= o.length; a -= 1)
+      r[a].remove();
+  }
+  reconcileNode(i, s) {
+    if (i.nodeType !== s.nodeType) {
+      i.replaceWith(s.cloneNode(!0));
+      return;
     }
-    onUpdate(payload) {
-      this.payload = payload ?? {};
-      this.logic.onUpdate?.(this.payload);
-      this.render();
+    if (i.nodeType === Node.TEXT_NODE) {
+      i.nodeValue !== s.nodeValue && (i.nodeValue = s.nodeValue);
+      return;
     }
-    onDestroy() {
-      this.cleanupSignalSubscriptions();
-      while (this.cleanups.length > 0) {
-        const cleanup = this.cleanups.pop();
-        cleanup?.();
+    if (!(!(i instanceof Element) || !(s instanceof Element))) {
+      if (i.tagName !== s.tagName) {
+        i.replaceWith(s.cloneNode(!0));
+        return;
       }
-      this.assetObserver.disconnect();
-      this.logic.onDestroy?.();
-      this.mount.innerHTML = "";
+      for (const r of Array.from(i.attributes))
+        s.hasAttribute(r.name) || i.removeAttribute(r.name);
+      for (const r of Array.from(s.attributes))
+        i.getAttribute(r.name) !== r.value && i.setAttribute(r.name, r.value);
+      this.reconcileChildren(i, s);
     }
-    hasEventAccessPermission() {
-      const config = this.payload?.config;
-      return Boolean(
-        config && typeof config === "object" && config.allowEventAccess === true
-      );
-    }
-    render() {
-      const scope = createScope(this.logic, this.payload);
-      this.widgetDirectory = String(
-        this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
-      ).trim();
-      const finalTemplate = rewriteInstallPathPlaceholders(options.template, this.widgetDirectory);
-      const finalStyles = rewriteInstallPathPlaceholders(options.styles, this.widgetDirectory);
-      const renderTemplate = createTemplateRenderer(finalTemplate);
-      const html = renderTemplate(scope);
-      this.mount.innerHTML = `<style>${finalStyles}</style>${html}`;
-      this.mount.setAttribute("data-displayduck-render-empty", html.trim().length === 0 ? "true" : "false");
-      rewriteTreeAssetUrls(this.mount, this.widgetDirectory);
-      this.logic.afterRender?.();
-    }
-    on(eventName, selector, handler) {
-      const listener = (event) => {
-        const target = event.target;
-        const matched = target?.closest(selector);
-        if (!matched || !this.mount.contains(matched)) {
-          return;
-        }
-        handler(event, matched);
-      };
-      this.mount.addEventListener(eventName, listener);
-      const cleanup = () => this.mount.removeEventListener(eventName, listener);
-      this.cleanups.push(cleanup);
-      return cleanup;
-    }
-  };
+  }
+  on(i, s, r) {
+    const o = (a) => {
+      const u = a.target?.closest(s);
+      !u || !this.mount.contains(u) || r(a, u);
+    };
+    this.mount.addEventListener(i, o);
+    const c = () => this.mount.removeEventListener(i, o);
+    return this.cleanups.push(c), c;
+  }
 };
-class EventEmitter {
+class it {
   constructor() {
     this.listenersMap = /* @__PURE__ */ new Map();
   }
-  addListener(eventName, listener) {
-    return this.on(eventName, listener);
+  addListener(t, e) {
+    return this.on(t, e);
   }
-  on(eventName, listener) {
-    const listeners = this.listenersMap.get(eventName) ?? [];
-    listeners.push({ listener, once: false });
-    this.listenersMap.set(eventName, listeners);
-    return this;
+  on(t, e) {
+    const i = this.listenersMap.get(t) ?? [];
+    return i.push({ listener: e, once: !1 }), this.listenersMap.set(t, i), this;
   }
-  once(eventName, listener) {
-    const listeners = this.listenersMap.get(eventName) ?? [];
-    listeners.push({ listener, once: true });
-    this.listenersMap.set(eventName, listeners);
-    return this;
+  once(t, e) {
+    const i = this.listenersMap.get(t) ?? [];
+    return i.push({ listener: e, once: !0 }), this.listenersMap.set(t, i), this;
   }
-  off(eventName, listener) {
-    return this.removeListener(eventName, listener);
+  off(t, e) {
+    return this.removeListener(t, e);
   }
-  removeListener(eventName, listener) {
-    const listeners = this.listenersMap.get(eventName);
-    if (!listeners?.length) {
+  removeListener(t, e) {
+    const i = this.listenersMap.get(t);
+    if (!i?.length)
       return this;
-    }
-    const nextListeners = listeners.filter((entry) => entry.listener !== listener);
-    if (nextListeners.length > 0) {
-      this.listenersMap.set(eventName, nextListeners);
-    } else {
-      this.listenersMap.delete(eventName);
-    }
-    return this;
+    const s = i.filter((r) => r.listener !== e);
+    return s.length > 0 ? this.listenersMap.set(t, s) : this.listenersMap.delete(t), this;
   }
-  removeAllListeners(eventName) {
-    if (eventName === void 0) {
-      this.listenersMap.clear();
-      return this;
-    }
-    this.listenersMap.delete(eventName);
-    return this;
+  removeAllListeners(t) {
+    return t === void 0 ? (this.listenersMap.clear(), this) : (this.listenersMap.delete(t), this);
   }
-  emit(eventName, ...args) {
-    const listeners = this.listenersMap.get(eventName);
-    if (!listeners?.length) {
-      return false;
-    }
-    const snapshot = [...listeners];
-    for (const entry of snapshot) {
-      entry.listener(...args);
-      if (entry.once) {
-        this.removeListener(eventName, entry.listener);
-      }
-    }
-    return true;
+  emit(t, ...e) {
+    const i = this.listenersMap.get(t);
+    if (!i?.length)
+      return !1;
+    const s = [...i];
+    for (const r of s)
+      r.listener(...e), r.once && this.removeListener(t, r.listener);
+    return !0;
   }
-  listeners(eventName) {
-    return (this.listenersMap.get(eventName) ?? []).map((entry) => entry.listener);
+  listeners(t) {
+    return (this.listenersMap.get(t) ?? []).map((e) => e.listener);
   }
-  listenerCount(eventName) {
-    return this.listeners(eventName).length;
+  listenerCount(t) {
+    return this.listeners(t).length;
   }
 }
-const uuid = () => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+const nt = () => {
+  if (typeof crypto < "u" && typeof crypto.randomUUID == "function")
     return crypto.randomUUID();
-  }
-  let value = "";
-  for (let index = 0; index < 32; index += 1) {
-    if (index === 8 || index === 12 || index === 16 || index === 20) {
-      value += "-";
+  let n = "";
+  for (let t = 0; t < 32; t += 1) {
+    (t === 8 || t === 12 || t === 16 || t === 20) && (n += "-");
+    let e;
+    if (t === 12)
+      e = 4;
+    else {
+      const i = Math.random() * 16 | 0;
+      e = t === 16 ? i & 3 | 8 : i;
     }
-    let nibble;
-    if (index === 12) {
-      nibble = 4;
-    } else {
-      const random = Math.random() * 16 | 0;
-      nibble = index === 16 ? random & 3 | 8 : random;
-    }
-    value += nibble.toString(16);
+    n += e.toString(16);
   }
-  return value;
-};
-const OPCodes = {
+  return n;
+}, _ = {
   HANDSHAKE: 0,
   FRAME: 1,
   CLOSE: 2,
   PING: 3,
   PONG: 4
-};
-const CONNECT_ATTEMPTS = 3;
-const CONNECT_RETRY_DELAY_MS = 250;
-const ENDPOINT_CACHE_TTL_MS = 15e3;
-let endpointCache = null;
-let endpointDiscoveryPromise = null;
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-const getPlatform = () => {
-  const platform = (globalThis.navigator?.platform ?? "").toLowerCase();
-  if (platform.includes("win")) {
-    return "win32";
-  }
-  return "unix";
-};
-const getCandidateEndpoints = (client) => {
-  const custom = Array.isArray(client.options?.ipcEndpoints) ? client.options.ipcEndpoints.filter((value) => typeof value === "string" && value.trim().length > 0) : [];
-  if (custom.length > 0) {
-    return custom;
-  }
-  const platform = getPlatform();
-  const candidates = [];
-  for (const build of ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"]) {
-    for (let i = 0; i < 10; i++) {
-      if (platform === "win32") {
-        candidates.push(`\\\\.\\pipe\\${build}-${i}`);
-      } else {
-        candidates.push(`/tmp/${build}-${i}`);
-      }
-    }
-  }
-  return candidates;
-};
-const hasCustomEndpoints = (client) => {
-  return Array.isArray(client.options?.ipcEndpoints) && client.options.ipcEndpoints.some((value) => typeof value === "string" && value.trim().length > 0);
-};
-const getReachableEndpoints = async (client) => {
-  const candidates = getCandidateEndpoints(client);
-  const cacheKey = candidates.join("\0");
-  if (endpointCache && endpointCache.key === cacheKey && endpointCache.expiresAt > Date.now()) {
-    return endpointCache.endpoints;
-  }
-  if (endpointDiscoveryPromise?.key === cacheKey) {
-    return endpointDiscoveryPromise.promise;
-  }
-  const promise = Promise.all(
-    candidates.map(async (endpoint) => ({
-      endpoint,
-      exists: await ipcTransportEndpointExists(endpoint).catch(() => false)
+}, F = 3, Yt = 250, Ft = 15e3;
+let I = null, y = null;
+const Kt = new TextEncoder(), jt = new TextDecoder(), Jt = () => (globalThis.navigator?.platform ?? "").toLowerCase().includes("win") ? "win32" : "unix", st = (n) => {
+  const t = Array.isArray(n.options?.ipcEndpoints) ? n.options.ipcEndpoints.filter((s) => typeof s == "string" && s.trim().length > 0) : [];
+  if (t.length > 0)
+    return t;
+  const e = Jt(), i = [];
+  for (const s of ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"])
+    for (let r = 0; r < 10; r++)
+      e === "win32" ? i.push(`\\\\.\\pipe\\${s}-${r}`) : i.push(`/tmp/${s}-${r}`);
+  return i;
+}, Qt = (n) => Array.isArray(n.options?.ipcEndpoints) && n.options.ipcEndpoints.some((t) => typeof t == "string" && t.trim().length > 0), Xt = async (n) => {
+  const t = st(n), e = t.join("\0");
+  if (I && I.key === e && I.expiresAt > Date.now())
+    return I.endpoints;
+  if (y?.key === e)
+    return y.promise;
+  const i = Promise.all(
+    t.map(async (s) => ({
+      endpoint: s,
+      exists: await et(s).catch(() => !1)
     }))
-  ).then((checks) => {
-    const endpoints = checks.filter((entry) => entry.exists).map((entry) => entry.endpoint);
-    endpointCache = {
-      key: cacheKey,
-      endpoints,
-      expiresAt: Date.now() + ENDPOINT_CACHE_TTL_MS
-    };
-    return endpoints;
+  ).then((s) => {
+    const r = s.filter((o) => o.exists).map((o) => o.endpoint);
+    return I = {
+      key: e,
+      endpoints: r,
+      expiresAt: Date.now() + Ft
+    }, r;
   }).finally(() => {
-    if (endpointDiscoveryPromise?.key === cacheKey) {
-      endpointDiscoveryPromise = null;
-    }
+    y?.key === e && (y = null);
   });
-  endpointDiscoveryPromise = { key: cacheKey, promise };
-  return promise;
-};
-const getSharedSessionId = (clientId, endpoint) => {
-  let hash = 2166136261;
-  for (const character of `discord:${clientId ?? ""}\0${endpoint}`) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `displayduck-discord-ipc-${(hash >>> 0).toString(16)}`;
-};
-const concatBytes = (left, right) => {
-  const merged = new Uint8Array(left.length + right.length);
-  merged.set(left, 0);
-  merged.set(right, left.length);
-  return merged;
-};
-const sleep = (ms) => new Promise((resolve) => {
-  setTimeout(resolve, ms);
-});
-const toTransportError = (payload) => {
-  if (payload instanceof Error) {
-    return payload;
-  }
-  if (payload && typeof payload === "object") {
-    const record = payload;
-    const message = String(record.message ?? "").trim();
-    const code = typeof record.code === "number" || typeof record.code === "string" ? String(record.code).trim() : "";
-    if (message || code) {
-      const error = new Error(
-        [message, code ? `(code ${code})` : ""].filter(Boolean).join(" ")
+  return y = { key: e, promise: i }, i;
+}, Zt = (n, t) => {
+  let e = 2166136261;
+  for (const i of `discord:${n ?? ""}\0${t}`)
+    e ^= i.charCodeAt(0), e = Math.imul(e, 16777619);
+  return `displayduck-discord-ipc-${(e >>> 0).toString(16)}`;
+}, te = (n, t) => {
+  const e = new Uint8Array(n.length + t.length);
+  return e.set(n, 0), e.set(t, n.length), e;
+}, ee = (n) => new Promise((t) => {
+  setTimeout(t, n);
+}), K = (n) => {
+  if (n instanceof Error)
+    return n;
+  if (n && typeof n == "object") {
+    const t = n, e = String(t.message ?? "").trim(), i = typeof t.code == "number" || typeof t.code == "string" ? String(t.code).trim() : "";
+    if (e || i) {
+      const s = new Error(
+        [e, i ? `(code ${i})` : ""].filter(Boolean).join(" ")
       );
-      if (code) {
-        error.code = code;
-      }
-      return error;
+      return i && (s.code = i), s;
     }
   }
-  return new Error(String(payload ?? "connection closed"));
+  return new Error(String(n ?? "connection closed"));
+}, j = (n, t) => {
+  const e = Kt.encode(JSON.stringify(t)), i = new Uint8Array(8 + e.length), s = new DataView(i.buffer);
+  return s.setInt32(0, n, !0), s.setInt32(4, e.length, !0), i.set(e, 8), i;
 };
-const encode = (op, data) => {
-  const payload = encoder.encode(JSON.stringify(data));
-  const packet = new Uint8Array(8 + payload.length);
-  const view = new DataView(packet.buffer);
-  view.setInt32(0, op, true);
-  view.setInt32(4, payload.length, true);
-  packet.set(payload, 8);
-  return packet;
-};
-class IPCTransport extends EventEmitter {
-  constructor(client) {
-    super();
-    this.socket = null;
-    this.buffer = new Uint8Array(0);
-    this.connectPromise = null;
-    this.connectionGeneration = 0;
-    this.client = client;
+class ie extends it {
+  constructor(t) {
+    super(), this.socket = null, this.buffer = new Uint8Array(0), this.connectPromise = null, this.connectionGeneration = 0, this.client = t;
   }
   async connect() {
-    if (this.socket) {
-      return false;
-    }
-    if (this.connectPromise) {
+    if (this.socket)
+      return !1;
+    if (this.connectPromise)
       return this.connectPromise;
-    }
-    const generation = this.connectionGeneration;
-    this.connectPromise = this.connectInternal(generation).finally(() => {
+    const t = this.connectionGeneration;
+    return this.connectPromise = this.connectInternal(t).finally(() => {
       this.connectPromise = null;
-    });
-    return this.connectPromise;
+    }), this.connectPromise;
   }
-  send(data, op = OPCodes.FRAME) {
-    if (!this.socket) {
+  send(t, e = _.FRAME) {
+    if (!this.socket)
       throw new Error("IPC transport is not connected");
-    }
-    const socket = this.socket;
-    void socket.write(encode(op, data)).catch((error) => {
-      if (this.socket === socket) {
-        this.socket = null;
-      }
-      this.emit("close", error instanceof Error ? error : new Error(String(error)));
+    const i = this.socket;
+    i.write(j(e, t)).catch((s) => {
+      this.socket === i && (this.socket = null), this.emit("close", s instanceof Error ? s : new Error(String(s)));
     });
   }
   async close() {
-    this.connectionGeneration += 1;
-    this.connectPromise = null;
-    if (!this.socket) {
+    if (this.connectionGeneration += 1, this.connectPromise = null, !this.socket) {
       this.buffer = new Uint8Array(0);
       return;
     }
-    const socket = this.socket;
-    this.socket = null;
-    this.buffer = new Uint8Array(0);
-    await socket.close();
+    const t = this.socket;
+    this.socket = null, this.buffer = new Uint8Array(0), await t.close();
   }
   ping() {
-    this.send(uuid(), OPCodes.PING);
+    this.send(nt(), _.PING);
   }
-  decode(chunk) {
-    this.buffer = concatBytes(this.buffer, chunk);
-    while (this.buffer.length >= 8) {
-      const view = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength);
-      const op = view.getInt32(0, true);
-      const length = view.getInt32(4, true);
-      const totalLength = 8 + length;
-      if (this.buffer.length < totalLength) {
+  decode(t) {
+    for (this.buffer = te(this.buffer, t); this.buffer.length >= 8; ) {
+      const e = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength), i = e.getInt32(0, !0), r = 8 + e.getInt32(4, !0);
+      if (this.buffer.length < r)
         return;
-      }
-      const payload = this.buffer.slice(8, totalLength);
-      this.buffer = this.buffer.slice(totalLength);
-      let data = null;
+      const o = this.buffer.slice(8, r);
+      this.buffer = this.buffer.slice(r);
+      let c = null;
       try {
-        data = JSON.parse(decoder.decode(payload));
+        c = JSON.parse(jt.decode(o));
       } catch {
         continue;
       }
-      if (op === OPCodes.PING) {
-        this.send(data, OPCodes.PONG);
+      if (i === _.PING) {
+        this.send(c, _.PONG);
         continue;
       }
-      if (op === OPCodes.FRAME) {
-        if (!data || typeof data !== "object") {
+      if (i === _.FRAME) {
+        if (!c || typeof c != "object")
           continue;
-        }
-        this.emit("message", data);
+        this.emit("message", c);
         continue;
       }
-      if (op === OPCodes.CLOSE) {
-        this.emit("close", toTransportError(data));
-      }
+      i === _.CLOSE && this.emit("close", K(c));
     }
   }
-  async connectInternal(generation) {
+  async connectInternal(t) {
     this.buffer = new Uint8Array(0);
-    const candidateEndpoints = getCandidateEndpoints(this.client);
-    const reachableEndpoints = await getReachableEndpoints(this.client);
-    if (generation !== this.connectionGeneration) {
+    const e = st(this.client), i = await Xt(this.client);
+    if (t !== this.connectionGeneration)
       throw new Error("Discord IPC connection was cancelled.");
-    }
-    const endpoints = reachableEndpoints.length > 0 ? reachableEndpoints : hasCustomEndpoints(this.client) ? candidateEndpoints : [];
-    let lastError = null;
-    if (endpoints.length === 0) {
+    const s = i.length > 0 ? i : Qt(this.client) ? e : [];
+    let r = null;
+    if (s.length === 0)
       throw new Error("Discord IPC endpoint is not available.");
-    }
-    for (let attempt = 0; attempt < CONNECT_ATTEMPTS; attempt += 1) {
-      for (const endpoint of endpoints) {
-        const transport = new IpcTransport({
-          endpoint,
-          sessionId: getSharedSessionId(this.client.clientId, endpoint)
-        });
-        const unbindOpen = transport.on("open", () => {
+    for (let o = 0; o < F; o += 1) {
+      for (const c of s) {
+        const a = new vt({
+          endpoint: c,
+          sessionId: Zt(this.client.clientId, c)
+        }), d = a.on("open", () => {
           this.emit("open");
-        });
-        const unbindData = transport.on("data", (chunk) => {
-          this.decode(chunk);
-        });
-        const unbindClose = transport.on("close", (payload) => {
-          if (this.socket === transport) {
-            this.socket = null;
-          }
-          this.buffer = new Uint8Array(0);
-          this.emit("close", payload.error ? new Error(payload.error) : toTransportError(payload));
+        }), u = a.on("data", (l) => {
+          this.decode(l);
+        }), T = a.on("close", (l) => {
+          this.socket === a && (this.socket = null), this.buffer = new Uint8Array(0), this.emit("close", l.error ? new Error(l.error) : K(l));
         });
         try {
-          const reused = await transport.connectWithInitialWrite(
-            encode(OPCodes.HANDSHAKE, {
+          const l = await a.connectWithInitialWrite(
+            j(_.HANDSHAKE, {
               v: 1,
               client_id: this.client.clientId
             })
           );
-          if (generation !== this.connectionGeneration) {
-            await transport.close().catch(() => void 0);
-            throw new Error("Discord IPC connection was cancelled.");
-          }
-          this.socket = transport;
-          return reused;
-        } catch (error) {
-          unbindOpen();
-          unbindData();
-          unbindClose();
-          await transport.close().catch(() => void 0);
-          lastError = error;
+          if (t !== this.connectionGeneration)
+            throw await a.close().catch(() => {
+            }), new Error("Discord IPC connection was cancelled.");
+          return this.socket = a, l;
+        } catch (l) {
+          d(), u(), T(), await a.close().catch(() => {
+          }), r = l;
         }
       }
-      if (attempt < CONNECT_ATTEMPTS - 1) {
-        await sleep(CONNECT_RETRY_DELAY_MS * (attempt + 1));
-      }
+      o < F - 1 && await ee(Yt * (o + 1));
     }
-    if (reachableEndpoints.length > 0) {
-      throw lastError instanceof Error ? lastError : new Error("Discord IPC endpoint is available, but the connection did not complete.");
-    }
-    throw lastError instanceof Error ? lastError : new Error("Could not connect");
+    throw i.length > 0 ? r instanceof Error ? r : new Error("Discord IPC endpoint is available, but the connection did not complete.") : r instanceof Error ? r : new Error("Could not connect");
   }
 }
-const keyMirror = (values) => {
-  const result = {};
-  for (const value of values) {
-    result[value] = value;
-  }
-  return result;
-};
-const RPCCommands = keyMirror([
+const rt = (n) => {
+  const t = {};
+  for (const e of n)
+    t[e] = e;
+  return t;
+}, h = rt([
   "DISPATCH",
   "AUTHORIZE",
   "AUTHENTICATE",
@@ -1327,8 +987,7 @@ const RPCCommands = keyMirror([
   "TOGGLE_SCREENSHARE",
   "GET_SOUNDBOARD_SOUNDS",
   "PLAY_SOUNDBOARD_SOUND"
-]);
-const RPCEvents = keyMirror([
+]), f = rt([
   "CURRENT_USER_UPDATE",
   "GUILD_STATUS",
   "GUILD_CREATE",
@@ -1367,1518 +1026,1072 @@ const RPCEvents = keyMirror([
   "USER_ACHIEVEMENT_UPDATE",
   "READY",
   "ERROR"
-]);
-const RelationshipTypes = {
+]), ne = {
   NONE: 0,
   FRIEND: 1,
   BLOCKED: 2,
   PENDING_INCOMING: 3,
   PENDING_OUTGOING: 4,
   IMPLICIT: 5
-};
-const RPC_REQUEST_TIMEOUT_MS = 8e3;
-const subKey = (event, args) => {
-  return `${event}${JSON.stringify(args)}`;
-};
-const getProcessId = (options, args) => {
-  const explicitPid = typeof args.pid === "number" ? args.pid : void 0;
-  if (typeof explicitPid === "number") {
-    return explicitPid;
-  }
-  return typeof options.pid === "number" ? options.pid : 0;
-};
-const createFormBody = (values) => {
-  const body = new URLSearchParams();
-  for (const [key, value] of Object.entries(values)) {
-    if (typeof value !== "string") {
+}, se = 8e3, J = (n, t) => `${n}${JSON.stringify(t)}`, Q = (n, t) => {
+  const e = typeof t.pid == "number" ? t.pid : void 0;
+  return typeof e == "number" ? e : typeof n.pid == "number" ? n.pid : 0;
+}, N = (n) => {
+  const t = new URLSearchParams();
+  for (const [e, i] of Object.entries(n)) {
+    if (typeof i != "string")
       continue;
-    }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      continue;
-    }
-    body.set(key, trimmed);
+    const s = i.trim();
+    s && t.set(e, s);
   }
-  return body;
-};
-const readApiErrorMessage = (body) => {
-  if (!body || typeof body !== "object") {
+  return t;
+}, re = (n) => {
+  if (!n || typeof n != "object")
     return "";
-  }
-  const error = "error" in body && typeof body.error === "string" ? body.error : "";
-  const description = "error_description" in body && typeof body.error_description === "string" ? body.error_description : "";
-  return [error, description].filter(Boolean).join(": ");
+  const t = "error" in n && typeof n.error == "string" ? n.error : "", e = "error_description" in n && typeof n.error_description == "string" ? n.error_description : "";
+  return [t, e].filter(Boolean).join(": ");
+}, ot = (n) => {
+  let t = "";
+  for (const e of n)
+    t += String.fromCharCode(e);
+  return btoa(t).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}, oe = () => {
+  const n = new Uint8Array(48);
+  return crypto.getRandomValues(n), ot(n);
+}, ae = async (n) => {
+  const t = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(n));
+  return ot(new Uint8Array(t));
 };
-const toBase64Url = (bytes) => {
-  let binary = "";
-  for (const value of bytes) {
-    binary += String.fromCharCode(value);
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-};
-const createPkceVerifier = () => {
-  const bytes = new Uint8Array(48);
-  crypto.getRandomValues(bytes);
-  return toBase64Url(bytes);
-};
-const createPkceChallenge = async (verifier) => {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  return toBase64Url(new Uint8Array(digest));
-};
-class Client extends EventEmitter {
-  constructor(options = {}) {
-    super();
-    this.accessToken = null;
-    this.refreshToken = null;
-    this.clientId = null;
-    this.application = null;
-    this.user = null;
-    this.endpoint = "https://discord.com/api/v10";
-    this._expecting = /* @__PURE__ */ new Map();
-    this._subscriptions = /* @__PURE__ */ new Map();
-    this.rpcSubscriptions = /* @__PURE__ */ new Map();
-    this.options = options;
-    this.transport = new IPCTransport(this);
-    this.transport.on("message", this._onRpcMessage.bind(this));
-    this.transport.on("close", (error) => {
-      this._expecting.forEach((entry) => {
-        if (entry.timeout) {
-          clearTimeout(entry.timeout);
-        }
-        entry.reject(error instanceof Error ? error : new Error("connection closed"));
-      });
-      this._expecting.clear();
-      this.rpcSubscriptions.clear();
-      this._connectPromise = void 0;
-      this.emit("disconnected", error instanceof Error ? error : new Error("connection closed"));
+class ce extends it {
+  constructor(t = {}) {
+    super(), this.accessToken = null, this.refreshToken = null, this.clientId = null, this.application = null, this.user = null, this.endpoint = "https://discord.com/api/v10", this._expecting = /* @__PURE__ */ new Map(), this._subscriptions = /* @__PURE__ */ new Map(), this.rpcSubscriptions = /* @__PURE__ */ new Map(), this.options = t, this.transport = new ie(this), this.transport.on("message", this._onRpcMessage.bind(this)), this.transport.on("close", (e) => {
+      this._expecting.forEach((i) => {
+        i.timeout && clearTimeout(i.timeout), i.reject(e instanceof Error ? e : new Error("connection closed"));
+      }), this._expecting.clear(), this.rpcSubscriptions.clear(), this._connectPromise = void 0, this.emit("disconnected", e instanceof Error ? e : new Error("connection closed"));
     });
   }
-  on(eventName, listener) {
-    return super.on(eventName, listener);
+  on(t, e) {
+    return super.on(t, e);
   }
-  off(eventName, listener) {
-    return super.off(eventName, listener);
+  off(t, e) {
+    return super.off(t, e);
   }
-  once(eventName, listener) {
-    return super.once(eventName, listener);
+  once(t, e) {
+    return super.once(t, e);
   }
-  emit(eventName, ...args) {
-    return super.emit(eventName, ...args);
+  emit(t, ...e) {
+    return super.emit(t, ...e);
   }
-  async fetch(method, path, { data, query } = {}) {
-    const search = query ? `?${new URLSearchParams(query).toString()}` : "";
-    const headers = {};
-    if (typeof this.accessToken === "string" && this.accessToken.trim().length > 0) {
-      headers.Authorization = `Bearer ${this.accessToken}`;
-    }
-    if (data instanceof URLSearchParams) {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
-    }
-    const response = await fetch(`${this.endpoint}${path}${search}`, {
-      method,
-      body: data,
-      headers
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(
-        `Discord API request failed: ${response.status} ${response.statusText}`
+  async fetch(t, e, { data: i, query: s } = {}) {
+    const r = s ? `?${new URLSearchParams(s).toString()}` : "", o = {};
+    typeof this.accessToken == "string" && this.accessToken.trim().length > 0 && (o.Authorization = `Bearer ${this.accessToken}`), i instanceof URLSearchParams && (o["Content-Type"] = "application/x-www-form-urlencoded");
+    const c = await fetch(`${this.endpoint}${e}${r}`, {
+      method: t,
+      body: i,
+      headers: o
+    }), a = await c.json().catch(() => ({}));
+    if (!c.ok) {
+      const d = new Error(
+        `Discord API request failed: ${c.status} ${c.statusText}`
       );
-      error.body = body;
-      error.status = response.status;
-      throw error;
+      throw d.body = a, d.status = c.status, d;
     }
-    return body;
+    return a;
   }
-  connect(clientId) {
-    if (this._connectPromise && this.clientId === clientId) {
-      return this._connectPromise;
-    }
-    if (this.clientId && this.clientId !== clientId) {
-      void this.destroy().catch(() => void 0);
-      this._connectPromise = void 0;
-    }
-    if (!this.transport.socket) {
-      this._connectPromise = void 0;
-    }
-    this._connectPromise = new Promise((resolve, reject) => {
-      this.clientId = clientId;
-      const onConnected = () => {
-        cleanup();
-        resolve(this);
-      };
-      const onDisconnected = (error) => {
-        cleanup();
-        reject(error instanceof Error ? error : new Error("connection closed"));
-      };
-      const cleanup = () => {
-        clearTimeout(timeout);
-        this.off("connected", onConnected);
-        this.off("disconnected", onDisconnected);
-      };
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error("RPC_CONNECTION_TIMEOUT"));
+  connect(t) {
+    return this._connectPromise && this.clientId === t ? this._connectPromise : (this.clientId && this.clientId !== t && (this.destroy().catch(() => {
+    }), this._connectPromise = void 0), this.transport.socket || (this._connectPromise = void 0), this._connectPromise = new Promise((e, i) => {
+      this.clientId = t;
+      const s = () => {
+        o(), e(this);
+      }, r = (a) => {
+        o(), i(a instanceof Error ? a : new Error("connection closed"));
+      }, o = () => {
+        clearTimeout(c), this.off("connected", s), this.off("disconnected", r);
+      }, c = setTimeout(() => {
+        o(), i(new Error("RPC_CONNECTION_TIMEOUT"));
       }, 1e4);
-      this.on("connected", onConnected);
-      this.on("disconnected", onDisconnected);
-      this.transport.connect().then((reused) => {
-        if (reused) {
-          onConnected();
-        }
-      }).catch((error) => {
-        cleanup();
-        reject(error);
+      this.on("connected", s), this.on("disconnected", r), this.transport.connect().then((a) => {
+        a && s();
+      }).catch((a) => {
+        o(), i(a);
       });
-    }).catch((error) => {
-      this._connectPromise = void 0;
-      throw error;
-    });
-    return this._connectPromise;
+    }).catch((e) => {
+      throw this._connectPromise = void 0, e;
+    }), this._connectPromise);
   }
-  async login(options) {
-    await this.connect(options.clientId);
-    if (!options.scopes) {
-      this.emit("ready");
-      return this;
+  async login(t) {
+    if (await this.connect(t.clientId), !t.scopes)
+      return this.emit("ready"), this;
+    if (t.refreshToken) {
+      const e = await this.refreshOAuthToken(t);
+      e !== null ? (t.accessToken = e.access_token, t.refreshToken = e.refresh_token, this.accessToken = e.access_token, this.refreshToken = e.refresh_token) : (t.accessToken = void 0, t.refreshToken = void 0);
     }
-    if (options.refreshToken) {
-      const auth = await this.refreshOAuthToken(options);
-      if (auth !== null) {
-        options.accessToken = auth.access_token;
-        options.refreshToken = auth.refresh_token;
-        this.accessToken = auth.access_token;
-        this.refreshToken = auth.refresh_token;
-      } else {
-        options.accessToken = void 0;
-        options.refreshToken = void 0;
-      }
+    if (!t.accessToken || !t.refreshToken) {
+      const e = await this.authorize(t);
+      t.accessToken = e.access_token, t.refreshToken = e.refresh_token, this.accessToken = e.access_token, this.refreshToken = e.refresh_token;
     }
-    if (!options.accessToken || !options.refreshToken) {
-      const auth = await this.authorize(options);
-      options.accessToken = auth.access_token;
-      options.refreshToken = auth.refresh_token;
-      this.accessToken = auth.access_token;
-      this.refreshToken = auth.refresh_token;
-    }
-    return this.authenticate(options);
+    return this.authenticate(t);
   }
-  request(cmd, args, evt) {
-    return new Promise((resolve, reject) => {
+  request(t, e, i) {
+    return new Promise((s, r) => {
       if (!this.transport.socket) {
-        reject(new Error("connection closed"));
+        r(new Error("connection closed"));
         return;
       }
-      const nonce = uuid();
-      const timeout = setTimeout(() => {
-        const pending = this._expecting.get(nonce);
-        if (!pending) {
-          return;
-        }
-        this._expecting.delete(nonce);
-        pending.reject(new Error(`Discord RPC request timed out: ${cmd}.`));
-      }, RPC_REQUEST_TIMEOUT_MS);
-      this._expecting.set(nonce, { resolve, reject, timeout });
+      const o = nt(), c = setTimeout(() => {
+        const a = this._expecting.get(o);
+        a && (this._expecting.delete(o), a.reject(new Error(`Discord RPC request timed out: ${t}.`)));
+      }, se);
+      this._expecting.set(o, { resolve: s, reject: r, timeout: c });
       try {
-        this.transport.send({ cmd, args, evt, nonce });
-      } catch (error) {
-        clearTimeout(timeout);
-        this._expecting.delete(nonce);
-        reject(error);
+        this.transport.send({ cmd: t, args: e, evt: i, nonce: o });
+      } catch (a) {
+        clearTimeout(c), this._expecting.delete(o), r(a);
       }
     });
   }
-  _onRpcMessage(message) {
-    if (message.cmd === RPCCommands.DISPATCH && message.evt === RPCEvents.READY) {
-      if (message.data && typeof message.data === "object" && "user" in message.data) {
-        this.user = message.data.user ?? null;
-      }
-      this.emit("connected");
+  _onRpcMessage(t) {
+    if (t.cmd === h.DISPATCH && t.evt === f.READY) {
+      t.data && typeof t.data == "object" && "user" in t.data && (this.user = t.data.user ?? null), this.emit("connected");
       return;
     }
-    if (message.evt === "ERROR" && !message.nonce) {
-      const data = message.data ?? {};
-      const error = new Error(data.message ?? "RPC handshake failed");
-      error.code = data.code;
-      error.data = message.data;
-      this.emit("disconnected", error);
+    if (t.evt === "ERROR" && !t.nonce) {
+      const e = t.data ?? {}, i = new Error(e.message ?? "RPC handshake failed");
+      i.code = e.code, i.data = t.data, this.emit("disconnected", i);
       return;
     }
-    if (message.nonce && this._expecting.has(message.nonce)) {
-      const request = this._expecting.get(message.nonce);
-      if (!request) {
+    if (t.nonce && this._expecting.has(t.nonce)) {
+      const e = this._expecting.get(t.nonce);
+      if (!e)
         return;
-      }
-      if (message.evt === "ERROR") {
-        const data = message.data ?? {};
-        const error = new Error(data.message ?? "RPC error");
-        error.code = data.code;
-        error.data = message.data;
-        if (request.timeout) {
-          clearTimeout(request.timeout);
-        }
-        request.reject(error);
-      } else {
-        if (request.timeout) {
-          clearTimeout(request.timeout);
-        }
-        request.resolve(message.data);
-      }
-      this._expecting.delete(message.nonce);
+      if (t.evt === "ERROR") {
+        const i = t.data ?? {}, s = new Error(i.message ?? "RPC error");
+        s.code = i.code, s.data = t.data, e.timeout && clearTimeout(e.timeout), e.reject(s);
+      } else
+        e.timeout && clearTimeout(e.timeout), e.resolve(t.data);
+      this._expecting.delete(t.nonce);
       return;
     }
-    this.emit(message.evt ?? "message", message.data);
+    this.emit(t.evt ?? "message", t.data);
   }
-  async authorize({ scopes, clientSecret, rpcToken, redirectUri, prompt } = { clientId: "" }) {
-    let nextRpcToken = rpcToken;
-    const verifier = createPkceVerifier();
-    const challenge = await createPkceChallenge(verifier);
-    if (clientSecret && rpcToken === true) {
-      const body = await this.fetch("POST", "/oauth2/token/rpc", {
-        data: createFormBody({
-          client_id: this.clientId || "",
-          client_secret: clientSecret
-        })
-      });
-      nextRpcToken = body.rpc_token;
-    }
-    const { code } = await this.request("AUTHORIZE", {
-      scopes,
+  async authorize({ scopes: t, clientSecret: e, rpcToken: i, redirectUri: s, prompt: r } = { clientId: "" }) {
+    let o = i;
+    const c = oe(), a = await ae(c);
+    e && i === !0 && (o = (await this.fetch("POST", "/oauth2/token/rpc", {
+      data: N({
+        client_id: this.clientId || "",
+        client_secret: e
+      })
+    })).rpc_token);
+    const { code: d } = await this.request("AUTHORIZE", {
+      scopes: t,
       client_id: this.clientId,
-      prompt,
-      rpc_token: nextRpcToken,
-      code_challenge: challenge,
+      prompt: r,
+      rpc_token: o,
+      code_challenge: a,
       code_challenge_method: "S256"
     });
     try {
       return await this.fetch("POST", "/oauth2/token", {
-        data: createFormBody({
+        data: N({
           client_id: this.clientId || "",
-          client_secret: clientSecret,
-          code,
+          client_secret: e,
+          code: d,
           grant_type: "authorization_code",
-          code_verifier: verifier,
-          redirect_uri: redirectUri || ""
+          code_verifier: c,
+          redirect_uri: s || ""
         })
       });
-    } catch (error) {
-      if (error instanceof Error && "status" in error && error.status === 401) {
-        const details = "body" in error ? readApiErrorMessage(error.body) : "";
+    } catch (u) {
+      if (u instanceof Error && "status" in u && u.status === 401) {
+        const T = "body" in u ? re(u.body) : "";
         throw new Error(
           [
-            `Authorization failed (401) while exchanging the Discord OAuth code.`,
-            `This widget authorizes directly from the client, so your Discord app must have Public Client enabled unless you are using a backend/client secret flow.`,
-            `Client ID: ${this.clientId || "(missing)"}. Redirect URI used: ${redirectUri || "(missing)"}.`,
-            `Make sure that exact redirect is listed on the OAuth2 page and that the Public Client toggle is enabled for direct widget authorization.`,
-            details ? `Discord response: ${details}.` : ""
+            "Authorization failed (401) while exchanging the Discord OAuth code.",
+            "This widget authorizes directly from the client, so your Discord app must have Public Client enabled unless you are using a backend/client secret flow.",
+            `Client ID: ${this.clientId || "(missing)"}. Redirect URI used: ${s || "(missing)"}.`,
+            "Make sure that exact redirect is listed on the OAuth2 page and that the Public Client toggle is enabled for direct widget authorization.",
+            T ? `Discord response: ${T}.` : ""
           ].filter(Boolean).join(" ")
         );
       }
-      throw error;
+      throw u;
     }
   }
-  async authenticate(options) {
+  async authenticate(t) {
     try {
-      const { application, user } = await this.request(
+      const { application: e, user: i } = await this.request(
         "AUTHENTICATE",
         {
-          access_token: options.accessToken
+          access_token: t.accessToken
         }
       );
-      this.accessToken = options.accessToken;
-      this.refreshToken = options.refreshToken;
-      this.application = application;
-      this.user = user;
-      this.emit("ready");
-      return this;
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === 401) {
-        throw new Error("Authentication failed. The provided access token is invalid or has expired.");
-      }
-      throw error;
+      return this.accessToken = t.accessToken, this.refreshToken = t.refreshToken, this.application = e, this.user = i, this.emit("ready"), this;
+    } catch (e) {
+      throw e instanceof Error && "code" in e && e.code === 401 ? new Error("Authentication failed. The provided access token is invalid or has expired.") : e;
     }
   }
-  async refreshOAuthToken(options) {
+  async refreshOAuthToken(t) {
     try {
-      const response = await fetch(`${this.endpoint}/oauth2/token`, {
+      const e = await fetch(`${this.endpoint}/oauth2/token`, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded"
         },
-        body: createFormBody({
-          client_id: options.clientId,
-          client_secret: options.clientSecret,
+        body: N({
+          client_id: t.clientId,
+          client_secret: t.clientSecret,
           grant_type: "refresh_token",
-          refresh_token: options.refreshToken || ""
+          refresh_token: t.refreshToken || ""
         })
       });
-      if (!response.ok) {
-        return null;
-      }
-      return await response.json();
+      return e.ok ? await e.json() : null;
     } catch {
       return null;
     }
   }
-  getGuild(id, timeout) {
-    return this.request(RPCCommands.GET_GUILD, { guild_id: id, timeout });
+  getGuild(t, e) {
+    return this.request(h.GET_GUILD, { guild_id: t, timeout: e });
   }
-  async getGuilds(timeout) {
-    const { guilds } = await this.request(RPCCommands.GET_GUILDS, { timeout });
-    return guilds;
+  async getGuilds(t) {
+    const { guilds: e } = await this.request(h.GET_GUILDS, { timeout: t });
+    return e;
   }
-  getChannel(id, timeout) {
-    return this.request(RPCCommands.GET_CHANNEL, { channel_id: id, timeout });
+  getChannel(t, e) {
+    return this.request(h.GET_CHANNEL, { channel_id: t, timeout: e });
   }
-  async getChannels(id, timeout) {
-    const { channels } = await this.request(RPCCommands.GET_CHANNELS, { guild_id: id, timeout });
-    return channels;
+  async getChannels(t, e) {
+    const { channels: i } = await this.request(h.GET_CHANNELS, { guild_id: t, timeout: e });
+    return i;
   }
   async getSelectedVoiceChannel() {
-    return this.request(RPCCommands.GET_SELECTED_VOICE_CHANNEL);
+    return this.request(h.GET_SELECTED_VOICE_CHANNEL);
   }
-  setCertifiedDevices(devices) {
-    return this.request(RPCCommands.SET_CERTIFIED_DEVICES, {
-      devices: devices.map((device) => ({
-        type: device.type,
-        id: device.uuid,
-        vendor: device.vendor,
-        model: device.model,
-        related: device.related,
-        echo_cancellation: device.echoCancellation,
-        noise_suppression: device.noiseSuppression,
-        automatic_gain_control: device.automaticGainControl,
-        hardware_mute: device.hardwareMute
+  setCertifiedDevices(t) {
+    return this.request(h.SET_CERTIFIED_DEVICES, {
+      devices: t.map((e) => ({
+        type: e.type,
+        id: e.uuid,
+        vendor: e.vendor,
+        model: e.model,
+        related: e.related,
+        echo_cancellation: e.echoCancellation,
+        noise_suppression: e.noiseSuppression,
+        automatic_gain_control: e.automaticGainControl,
+        hardware_mute: e.hardwareMute
       }))
     });
   }
-  setPushToTalk(state) {
-    return this.request(RPCCommands.PUSH_TO_TALK, { active: state });
+  setPushToTalk(t) {
+    return this.request(h.PUSH_TO_TALK, { active: t });
   }
-  setUserVoiceSettings(id, settings) {
-    return this.request(RPCCommands.SET_USER_VOICE_SETTINGS, {
-      user_id: id,
-      ...settings
+  setUserVoiceSettings(t, e) {
+    return this.request(h.SET_USER_VOICE_SETTINGS, {
+      user_id: t,
+      ...e
     });
   }
-  selectVoiceChannel(id, { timeout, force = false } = {}) {
-    return this.request(RPCCommands.SELECT_VOICE_CHANNEL, { channel_id: id, timeout, force });
+  selectVoiceChannel(t, { timeout: e, force: i = !1 } = {}) {
+    return this.request(h.SELECT_VOICE_CHANNEL, { channel_id: t, timeout: e, force: i });
   }
-  selectTextChannel(id, { timeout } = {}) {
-    return this.request(RPCCommands.SELECT_TEXT_CHANNEL, { channel_id: id, timeout });
+  selectTextChannel(t, { timeout: e } = {}) {
+    return this.request(h.SELECT_TEXT_CHANNEL, { channel_id: t, timeout: e });
   }
   getVoiceSettings() {
-    return this.request(RPCCommands.GET_VOICE_SETTINGS);
+    return this.request(h.GET_VOICE_SETTINGS);
   }
-  setVoiceSettings(args) {
-    return this.request(RPCCommands.SET_VOICE_SETTINGS, args);
+  setVoiceSettings(t) {
+    return this.request(h.SET_VOICE_SETTINGS, t);
   }
-  captureShortcut(callback) {
-    const subscriptionId = subKey(RPCEvents.CAPTURE_SHORTCUT_CHANGE);
-    const stop = () => {
-      this._subscriptions.delete(subscriptionId);
-      return this.request(RPCCommands.CAPTURE_SHORTCUT, { action: "STOP" });
-    };
-    this._subscriptions.set(subscriptionId, ({ shortcut }) => {
-      callback(shortcut, stop);
-    });
-    return this.request(RPCCommands.CAPTURE_SHORTCUT, { action: "START" }).then(() => stop);
+  captureShortcut(t) {
+    const e = J(f.CAPTURE_SHORTCUT_CHANGE), i = () => (this._subscriptions.delete(e), this.request(h.CAPTURE_SHORTCUT, { action: "STOP" }));
+    return this._subscriptions.set(e, ({ shortcut: s }) => {
+      t(s, i);
+    }), this.request(h.CAPTURE_SHORTCUT, { action: "START" }).then(() => i);
   }
-  setActivity(args = {}) {
-    let timestamps;
-    let assets;
-    let party;
-    let secrets;
-    if (args.startTimestamp || args.endTimestamp) {
-      timestamps = {
-        start: args.startTimestamp,
-        end: args.endTimestamp
-      };
-      if (timestamps.start instanceof Date) {
-        timestamps.start = Math.round(timestamps.start.getTime());
-      }
-      if (timestamps.end instanceof Date) {
-        timestamps.end = Math.round(timestamps.end.getTime());
-      }
-      if (timestamps.start > 2147483647e3) {
+  setActivity(t = {}) {
+    let e, i, s, r;
+    if (t.startTimestamp || t.endTimestamp) {
+      if (e = {
+        start: t.startTimestamp,
+        end: t.endTimestamp
+      }, e.start instanceof Date && (e.start = Math.round(e.start.getTime())), e.end instanceof Date && (e.end = Math.round(e.end.getTime())), e.start > 2147483647e3)
         throw new RangeError("timestamps.start must fit into a unix timestamp");
-      }
-      if (timestamps.end > 2147483647e3) {
+      if (e.end > 2147483647e3)
         throw new RangeError("timestamps.end must fit into a unix timestamp");
-      }
     }
-    if (args.largeImageKey || args.largeImageText || args.smallImageKey || args.smallImageText) {
-      assets = {
-        large_image: args.largeImageKey,
-        large_text: args.largeImageText,
-        small_image: args.smallImageKey,
-        small_text: args.smallImageText
-      };
-    }
-    if (args.partySize || args.partyId || args.partyMax) {
-      party = { id: args.partyId };
-      if (args.partySize || args.partyMax) {
-        party.size = [args.partySize, args.partyMax];
-      }
-    }
-    if (args.matchSecret || args.joinSecret || args.spectateSecret) {
-      secrets = {
-        match: args.matchSecret,
-        join: args.joinSecret,
-        spectate: args.spectateSecret
-      };
-    }
-    return this.request(RPCCommands.SET_ACTIVITY, {
-      pid: getProcessId(this.options, args),
+    return (t.largeImageKey || t.largeImageText || t.smallImageKey || t.smallImageText) && (i = {
+      large_image: t.largeImageKey,
+      large_text: t.largeImageText,
+      small_image: t.smallImageKey,
+      small_text: t.smallImageText
+    }), (t.partySize || t.partyId || t.partyMax) && (s = { id: t.partyId }, (t.partySize || t.partyMax) && (s.size = [t.partySize, t.partyMax])), (t.matchSecret || t.joinSecret || t.spectateSecret) && (r = {
+      match: t.matchSecret,
+      join: t.joinSecret,
+      spectate: t.spectateSecret
+    }), this.request(h.SET_ACTIVITY, {
+      pid: Q(this.options, t),
       activity: {
-        state: args.state,
-        details: args.details,
-        timestamps,
-        assets,
-        party,
-        secrets,
-        buttons: args.buttons,
-        instance: !!args.instance
+        state: t.state,
+        details: t.details,
+        timestamps: e,
+        assets: i,
+        party: s,
+        secrets: r,
+        buttons: t.buttons,
+        instance: !!t.instance
       }
     });
   }
   clearActivity() {
-    return this.request(RPCCommands.SET_ACTIVITY, { pid: getProcessId(this.options, {}) });
+    return this.request(h.SET_ACTIVITY, { pid: Q(this.options, {}) });
   }
-  sendJoinInvite(user) {
-    return this.request(RPCCommands.SEND_ACTIVITY_JOIN_INVITE, {
-      user_id: typeof user === "string" ? user : user.id
+  sendJoinInvite(t) {
+    return this.request(h.SEND_ACTIVITY_JOIN_INVITE, {
+      user_id: typeof t == "string" ? t : t.id
     });
   }
-  sendJoinRequest(user) {
-    return this.request(RPCCommands.SEND_ACTIVITY_JOIN_REQUEST, {
-      user_id: typeof user === "string" ? user : user.id
+  sendJoinRequest(t) {
+    return this.request(h.SEND_ACTIVITY_JOIN_REQUEST, {
+      user_id: typeof t == "string" ? t : t.id
     });
   }
   toggleVideo() {
-    return this.request(RPCCommands.TOGGLE_VIDEO);
+    return this.request(h.TOGGLE_VIDEO);
   }
   toggleScreenshare() {
-    return this.request(RPCCommands.TOGGLE_SCREENSHARE);
+    return this.request(h.TOGGLE_SCREENSHARE);
   }
   getSoundboardSounds() {
-    return this.request(RPCCommands.GET_SOUNDBOARD_SOUNDS);
+    return this.request(h.GET_SOUNDBOARD_SOUNDS);
   }
-  playSoundboardSound(guild_id, sound_id) {
-    return this.request(RPCCommands.PLAY_SOUNDBOARD_SOUND, { guild_id, sound_id });
+  playSoundboardSound(t, e) {
+    return this.request(h.PLAY_SOUNDBOARD_SOUND, { guild_id: t, sound_id: e });
   }
-  closeJoinRequest(user) {
-    return this.request(RPCCommands.CLOSE_ACTIVITY_JOIN_REQUEST, {
-      user_id: typeof user === "string" ? user : user.id
+  closeJoinRequest(t) {
+    return this.request(h.CLOSE_ACTIVITY_JOIN_REQUEST, {
+      user_id: typeof t == "string" ? t : t.id
     });
   }
-  createLobby(type, capacity, metadata) {
-    return this.request(RPCCommands.CREATE_LOBBY, { type, capacity, metadata });
+  createLobby(t, e, i) {
+    return this.request(h.CREATE_LOBBY, { type: t, capacity: e, metadata: i });
   }
-  updateLobby(lobby, {
-    type,
-    owner,
-    capacity,
-    metadata
+  updateLobby(t, {
+    type: e,
+    owner: i,
+    capacity: s,
+    metadata: r
   } = {}) {
-    return this.request(RPCCommands.UPDATE_LOBBY, {
-      id: typeof lobby === "string" ? lobby : lobby.id,
-      type,
-      owner_id: typeof owner === "string" ? owner : owner?.id,
-      capacity,
-      metadata
+    return this.request(h.UPDATE_LOBBY, {
+      id: typeof t == "string" ? t : t.id,
+      type: e,
+      owner_id: typeof i == "string" ? i : i?.id,
+      capacity: s,
+      metadata: r
     });
   }
-  deleteLobby(lobby) {
-    return this.request(RPCCommands.DELETE_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id });
+  deleteLobby(t) {
+    return this.request(h.DELETE_LOBBY, { id: typeof t == "string" ? t : t.id });
   }
-  connectToLobby(id, secret) {
-    return this.request(RPCCommands.CONNECT_TO_LOBBY, { id, secret });
+  connectToLobby(t, e) {
+    return this.request(h.CONNECT_TO_LOBBY, { id: t, secret: e });
   }
-  sendToLobby(lobby, data) {
-    return this.request(RPCCommands.SEND_TO_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id, data });
+  sendToLobby(t, e) {
+    return this.request(h.SEND_TO_LOBBY, { id: typeof t == "string" ? t : t.id, data: e });
   }
-  disconnectFromLobby(lobby) {
-    return this.request(RPCCommands.DISCONNECT_FROM_LOBBY, { id: typeof lobby === "string" ? lobby : lobby.id });
+  disconnectFromLobby(t) {
+    return this.request(h.DISCONNECT_FROM_LOBBY, { id: typeof t == "string" ? t : t.id });
   }
-  updateLobbyMember(lobby, user, metadata) {
-    return this.request(RPCCommands.UPDATE_LOBBY_MEMBER, {
-      lobby_id: typeof lobby === "string" ? lobby : lobby.id,
-      user_id: typeof user === "string" ? user : user.id,
-      metadata
+  updateLobbyMember(t, e, i) {
+    return this.request(h.UPDATE_LOBBY_MEMBER, {
+      lobby_id: typeof t == "string" ? t : t.id,
+      user_id: typeof e == "string" ? e : e.id,
+      metadata: i
     });
   }
   getRelationships() {
-    const types = Object.keys(RelationshipTypes);
+    const t = Object.keys(ne);
     return this.request(
-      RPCCommands.GET_RELATIONSHIPS
-    ).then((response) => {
-      return response.relationships.map((relationship) => ({
-        ...relationship,
-        type: types[relationship.type]
-      }));
-    });
+      h.GET_RELATIONSHIPS
+    ).then((e) => e.relationships.map((i) => ({
+      ...i,
+      type: t[i.type]
+    })));
   }
-  async subscribe(event, args) {
-    const key = subKey(event, args);
-    let subscription = this.rpcSubscriptions.get(key);
-    if (!subscription) {
-      subscription = {
-        event,
-        args,
-        count: 0,
-        ready: this.request(RPCCommands.SUBSCRIBE, args, event)
-      };
-      this.rpcSubscriptions.set(key, subscription);
-    }
-    subscription.count += 1;
+  async subscribe(t, e) {
+    const i = J(t, e);
+    let s = this.rpcSubscriptions.get(i);
+    s || (s = {
+      event: t,
+      args: e,
+      count: 0,
+      ready: this.request(h.SUBSCRIBE, e, t)
+    }, this.rpcSubscriptions.set(i, s)), s.count += 1;
     try {
-      await subscription.ready;
-    } catch (error) {
-      if (this.rpcSubscriptions.get(key) === subscription) {
-        this.rpcSubscriptions.delete(key);
-      }
-      throw error;
+      await s.ready;
+    } catch (o) {
+      throw this.rpcSubscriptions.get(i) === s && this.rpcSubscriptions.delete(i), o;
     }
-    let active = true;
+    let r = !0;
     return {
       unsubscribe: async () => {
-        if (!active) {
+        if (!r)
           return;
-        }
-        active = false;
-        const current = this.rpcSubscriptions.get(key);
-        if (current !== subscription) {
-          return;
-        }
-        current.count = Math.max(0, current.count - 1);
-        if (current.count > 0) {
-          return;
-        }
-        this.rpcSubscriptions.delete(key);
-        await current.ready.catch(() => void 0);
-        await this.request(RPCCommands.UNSUBSCRIBE, current.args, current.event).catch(() => void 0);
+        r = !1;
+        const o = this.rpcSubscriptions.get(i);
+        o === s && (o.count = Math.max(0, o.count - 1), !(o.count > 0) && (this.rpcSubscriptions.delete(i), await o.ready.catch(() => {
+        }), await this.request(h.UNSUBSCRIBE, o.args, o.event).catch(() => {
+        })));
       }
     };
   }
   isAuthenticated() {
-    return Boolean(this.accessToken && this.application && this.user);
+    return !!(this.accessToken && this.application && this.user);
   }
   async destroy() {
-    const error = new Error("Discord RPC client was closed.");
-    for (const pending of this._expecting.values()) {
-      if (pending.timeout) {
-        clearTimeout(pending.timeout);
-      }
-      pending.reject(error);
-    }
-    this._expecting.clear();
-    this._subscriptions.clear();
-    this.rpcSubscriptions.clear();
-    this._connectPromise = void 0;
-    await this.transport.close();
+    const t = new Error("Discord RPC client was closed.");
+    for (const e of this._expecting.values())
+      e.timeout && clearTimeout(e.timeout), e.reject(t);
+    this._expecting.clear(), this._subscriptions.clear(), this.rpcSubscriptions.clear(), this._connectPromise = void 0, await this.transport.close();
   }
 }
-const STORAGE_PREFIX = "displayduck:discord-ipc:token:";
-const DEFAULT_DISCORD_REDIRECT_URI = "http://localhost";
-const DISCORD_SCOPES = ["rpc", "rpc.voice.read", "rpc.voice.write"];
-const DISCORD_IPC_BUILDS = ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"];
-const SPEAKING_TIMEOUT_MS = 1e3;
-const SPEAKING_WATCHDOG_INTERVAL_MS = 500;
-const VOICE_POLL_INTERVAL_MS = 3e3;
-const RECONNECT_BASE_MS = 5e3;
-const RECONNECT_MAX_MS = 3e4;
-const RECONNECT_JITTER_MS = 750;
-const DISCORD_STATUS_CACHE_MS = 2500;
-const SHARED_CLIENT_IDLE_MS = 3e3;
-let discordStatusCache = null;
-let discordStatusProbe = null;
-const sharedDiscordClients = (() => {
-  const globalScope = globalThis;
-  if (!globalScope.__displayduckDiscordClients) {
-    globalScope.__displayduckDiscordClients = /* @__PURE__ */ new Map();
-  }
-  return globalScope.__displayduckDiscordClients;
-})();
-const acquireSharedDiscordClient = (clientId) => {
-  let shared = sharedDiscordClients.get(clientId);
-  if (!shared) {
-    shared = {
-      client: new Client(),
-      clientId,
-      references: 0,
-      closeTimer: null
-    };
-    sharedDiscordClients.set(clientId, shared);
-  }
-  if (shared.closeTimer) {
-    clearTimeout(shared.closeTimer);
-    shared.closeTimer = null;
-  }
-  shared.references += 1;
-  return shared.client;
+const P = "displayduck:discord-ipc:token:", X = "http://localhost", le = ["rpc", "rpc.voice.read", "rpc.voice.write"], he = ["discord-ipc", "discord-canary-ipc", "discord-ptb-ipc"], de = 1e3, ue = 500, fe = 3e3, pe = 5e3, Ee = 3e4, ge = 750, me = 2500, Te = 3e3;
+let b = null, C = null;
+const R = (() => {
+  const n = globalThis;
+  return n.__displayduckDiscordClients || (n.__displayduckDiscordClients = /* @__PURE__ */ new Map()), n.__displayduckDiscordClients;
+})(), _e = (n) => {
+  let t = R.get(n);
+  return t || (t = {
+    client: new ce(),
+    clientId: n,
+    references: 0,
+    closeTimer: null
+  }, R.set(n, t)), t.closeTimer && (clearTimeout(t.closeTimer), t.closeTimer = null), t.references += 1, t.client;
+}, Se = (n) => {
+  const t = Array.from(R.values()).find((e) => e.client === n);
+  t && (t.references = Math.max(0, t.references - 1), !(t.references > 0 || t.closeTimer) && (t.closeTimer = setTimeout(() => {
+    t.closeTimer = null, !(t.references > 0) && (R.delete(t.clientId), t.client.destroy());
+  }, Te)));
+}, g = (n) => !!n && typeof n == "object", p = (n) => typeof n == "string" ? n.trim() : "", m = (n) => n === !0, Ie = (n) => n.startsWith("a_") ? "gif" : "png", Z = (n, t) => {
+  const e = p(t);
+  if (e)
+    return `https://cdn.discordapp.com/${n}/${e}.${Ie(e)}?size=128`;
+}, ye = () => {
+  const n = [], t = (globalThis.navigator?.platform ?? "").toLowerCase().includes("win");
+  for (const e of he)
+    for (let i = 0; i < 10; i += 1)
+      n.push(t ? `\\\\.\\pipe\\${e}-${i}` : `/tmp/${e}-${i}`);
+  return n;
 };
-const releaseSharedDiscordClient = (client) => {
-  const shared = Array.from(sharedDiscordClients.values()).find((candidate) => candidate.client === client);
-  if (!shared) {
-    return;
-  }
-  shared.references = Math.max(0, shared.references - 1);
-  if (shared.references > 0 || shared.closeTimer) {
-    return;
-  }
-  shared.closeTimer = setTimeout(() => {
-    shared.closeTimer = null;
-    if (shared.references > 0) {
-      return;
-    }
-    sharedDiscordClients.delete(shared.clientId);
-    void shared.client.destroy();
-  }, SHARED_CLIENT_IDLE_MS);
-};
-const isRecord = (value) => {
-  return Boolean(value) && typeof value === "object";
-};
-const readString = (value) => {
-  return typeof value === "string" ? value.trim() : "";
-};
-const readBoolean = (value) => {
-  return value === true;
-};
-const avatarExtension = (hash) => {
-  return hash.startsWith("a_") ? "gif" : "png";
-};
-const toAvatarUrl = (path, hash) => {
-  const normalizedHash = readString(hash);
-  if (!normalizedHash) {
-    return void 0;
-  }
-  return `https://cdn.discordapp.com/${path}/${normalizedHash}.${avatarExtension(normalizedHash)}?size=128`;
-};
-const getDiscordIpcEndpoints = () => {
-  const endpoints = [];
-  const isWindows = (globalThis.navigator?.platform ?? "").toLowerCase().includes("win");
-  for (const build of DISCORD_IPC_BUILDS) {
-    for (let index = 0; index < 10; index += 1) {
-      endpoints.push(isWindows ? `\\\\.\\pipe\\${build}-${index}` : `/tmp/${build}-${index}`);
-    }
-  }
-  return endpoints;
-};
-let DisplayDuckWidget$1 = class DisplayDuckWidget {
-  constructor(ctx) {
-    this.ctx = ctx;
-    this.client = null;
-    this.clientListenerCleanups = [];
-    this.subscriptions = [];
-    this.reconnectTimer = null;
-    this.speakingWatchdog = null;
-    this.voicePollTimer = null;
-    this.reconnectAttempts = 0;
-    this.runId = 0;
-    this.selectedChannelId = "";
-    this.liveSpeaking = /* @__PURE__ */ new Map();
-    this.payload = signal(ctx.payload ?? {});
-    this.state = signal({
+let Ce = class {
+  constructor(t) {
+    this.ctx = t, this.client = null, this.clientListenerCleanups = [], this.subscriptions = [], this.reconnectTimer = null, this.speakingWatchdog = null, this.voicePollTimer = null, this.reconnectAttempts = 0, this.runId = 0, this.selectedChannelId = "", this.liveSpeaking = /* @__PURE__ */ new Map(), this.payload = $(t.payload ?? {}), this.state = $({
       message: "Waiting for Discord authorization.",
-      authenticated: false,
+      authenticated: !1,
       participants: [],
-      isLoading: false,
-      authorizationRequired: false,
-      retryAvailable: false,
-      hideableDisconnect: false,
+      isLoading: !1,
+      authorizationRequired: !1,
+      retryAvailable: !1,
+      hideableDisconnect: !1,
       clientId: this.clientId()
     });
   }
   afterRender() {
     this.ctx.mount.style.display = "";
-    for (const participant of this.state().participants) {
+    for (const t of this.state().participants)
       this.patchParticipantSpeaking(
-        participant.id,
-        this.liveSpeaking.get(participant.id)?.speaking ?? participant.speaking
+        t.id,
+        this.liveSpeaking.get(t.id)?.speaking ?? t.speaking
       );
-    }
   }
   onInit() {
     this.ctx.on("click", "#login-btn", () => {
-      if (this.state().isLoading) {
-        return;
+      if (!this.state().isLoading) {
+        if (this.state().authorizationRequired) {
+          this.authorize();
+          return;
+        }
+        this.syncSession("Connecting to Discord...");
       }
-      if (this.state().authorizationRequired) {
-        void this.authorize();
-        return;
-      }
-      void this.syncSession("Connecting to Discord...");
-    });
-    this.ctx.on("click", "[data-participant-id]", (_event, target) => {
-      const participantId = target.getAttribute("data-participant-id")?.trim() ?? "";
-      if (!participantId || this.state().isLoading) {
-        return;
-      }
-      void this.toggleParticipantMute(participantId);
-    });
-    void this.initialize();
+    }), this.ctx.on("click", "[data-participant-id]", (t, e) => {
+      const i = e.getAttribute("data-participant-id")?.trim() ?? "";
+      !i || this.state().isLoading || this.toggleParticipantMute(i);
+    }), this.initialize();
   }
-  onUpdate(payload) {
-    this.payload.set(payload ?? {});
-    const nextClientId = this.clientId();
-    if (nextClientId === this.state().clientId) {
-      return;
-    }
-    this.invalidateRun();
-    this.stopSpeakingWatchdog();
-    this.stopVoicePolling();
-    this.cancelReconnect();
-    this.liveSpeaking.clear();
-    void this.destroyClient();
-    this.patchState({
-      clientId: nextClientId,
-      authenticated: false,
+  onUpdate(t) {
+    this.payload.set(t ?? {});
+    const e = this.clientId();
+    e !== this.state().clientId && (this.invalidateRun(), this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.cancelReconnect(), this.liveSpeaking.clear(), this.destroyClient(), this.patchState({
+      clientId: e,
+      authenticated: !1,
       participants: [],
-      authorizationRequired: false,
-      retryAvailable: false,
-      hideableDisconnect: false,
-      message: nextClientId ? "Client changed. Reconnecting to Discord." : "Set a Discord client ID to begin authorization.",
-      isLoading: false
-    });
-    void this.syncSession("Connecting to Discord...");
+      authorizationRequired: !1,
+      retryAvailable: !1,
+      hideableDisconnect: !1,
+      message: e ? "Client changed. Reconnecting to Discord." : "Set a Discord client ID to begin authorization.",
+      isLoading: !1
+    }), this.syncSession("Connecting to Discord..."));
   }
   onDestroy() {
-    this.invalidateRun();
-    this.stopSpeakingWatchdog();
-    this.stopVoicePolling();
-    this.cancelReconnect();
-    this.liveSpeaking.clear();
-    void this.destroyClient();
+    this.invalidateRun(), this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.cancelReconnect(), this.liveSpeaking.clear(), this.destroyClient();
   }
   async initialize() {
     await this.syncSession("Connecting to Discord...");
   }
-  async syncSession(message) {
-    const clientId = this.state().clientId;
-    if (!clientId) {
+  async syncSession(t) {
+    const e = this.state().clientId;
+    if (!e) {
       this.patchState({
         message: "Set a Discord client ID to begin authorization.",
-        authenticated: false,
+        authenticated: !1,
         participants: [],
-        authorizationRequired: false,
-        retryAvailable: false,
-        hideableDisconnect: false,
-        isLoading: false
+        authorizationRequired: !1,
+        retryAvailable: !1,
+        hideableDisconnect: !1,
+        isLoading: !1
       });
       return;
     }
-    const runId = this.beginRun();
-    this.setBusy(true, message);
-    this.cancelReconnect();
+    const i = this.beginRun();
+    this.setBusy(!0, t), this.cancelReconnect();
     try {
-      const client = await this.ensureConnected(clientId);
-      if (!this.isCurrentRun(runId)) return;
-      const storedToken = this.readStoredToken(clientId);
-      if (client.isAuthenticated()) {
-        await this.handleAuthenticated(client);
+      const s = await this.ensureConnected(e);
+      if (!this.isCurrentRun(i)) return;
+      const r = this.readStoredToken(e);
+      if (s.isAuthenticated()) {
+        await this.handleAuthenticated(s);
         return;
       }
-      if (!storedToken?.accessToken) {
+      if (!r?.accessToken) {
         this.requireAuthorization("Waiting for Discord authorization.");
         return;
       }
-      if (await this.restoreStoredSession(client, storedToken)) {
-        if (!this.isCurrentRun(runId)) return;
-        await this.handleAuthenticated(client);
+      if (await this.restoreStoredSession(s, r)) {
+        if (!this.isCurrentRun(i)) return;
+        await this.handleAuthenticated(s);
       }
-    } catch (error) {
-      if (!this.isCurrentRun(runId)) return;
-      const isRunning = await this.isDiscordRunning();
+    } catch (s) {
+      if (!this.isCurrentRun(i)) return;
+      const r = await this.isDiscordRunning();
       this.disconnect(
-        error,
-        isRunning ? "Could not connect to Discord." : "Discord is not running.",
-        isRunning
+        s,
+        r ? "Could not connect to Discord." : "Discord is not running.",
+        r
       );
     } finally {
-      if (this.isCurrentRun(runId)) {
-        this.setBusy(false);
-      }
+      this.isCurrentRun(i) && this.setBusy(!1);
     }
   }
   async authorize() {
-    const clientId = this.state().clientId;
-    const redirectUri = this.redirectUri();
-    if (!clientId) {
+    const t = this.state().clientId, e = this.redirectUri();
+    if (!t) {
       this.patchState({
         message: "Set a Discord client ID to begin authorization.",
-        isLoading: false,
-        authorizationRequired: false
+        isLoading: !1,
+        authorizationRequired: !1
       });
       return;
     }
-    const runId = this.beginRun();
-    this.setBusy(true, "Awaiting authorization in Discord client...");
-    this.cancelReconnect();
+    const i = this.beginRun();
+    this.setBusy(!0, "Awaiting authorization in Discord client..."), this.cancelReconnect();
     try {
-      const client = await this.ensureConnected(clientId);
-      if (!this.isCurrentRun(runId)) return;
-      await client.login({
-        clientId,
-        redirectUri,
-        scopes: [...DISCORD_SCOPES],
+      const s = await this.ensureConnected(t);
+      if (!this.isCurrentRun(i) || (await s.login({
+        clientId: t,
+        redirectUri: e,
+        scopes: [...le],
         prompt: "consent"
-      });
-      if (!this.isCurrentRun(runId)) return;
-      this.persistClientTokens(clientId, client);
-      await this.handleAuthenticated(client);
-    } catch (error) {
-      if (!this.isCurrentRun(runId)) return;
-      if (this.shouldInvalidateToken(error)) {
-        this.clearStoredToken(clientId);
-      }
-      this.requireAuthorization(this.formatError(error, "Discord authorization failed."));
+      }), !this.isCurrentRun(i))) return;
+      this.persistClientTokens(t, s), await this.handleAuthenticated(s);
+    } catch (s) {
+      if (!this.isCurrentRun(i)) return;
+      this.shouldInvalidateToken(s) && this.clearStoredToken(t), this.requireAuthorization(this.formatError(s, "Discord authorization failed."));
     } finally {
-      if (this.isCurrentRun(runId)) {
-        this.setBusy(false);
-      }
+      this.isCurrentRun(i) && this.setBusy(!1);
     }
   }
-  async ensureConnected(clientId) {
-    if (this.client?.clientId === clientId) {
-      await this.client.connect(clientId);
-      return this.client;
-    }
+  async ensureConnected(t) {
+    if (this.client?.clientId === t)
+      return await this.client.connect(t), this.client;
     await this.destroyClient();
-    const client = acquireSharedDiscordClient(clientId);
-    this.client = client;
-    this.selectedChannelId = "";
-    this.bindClient(client);
+    const e = _e(t);
+    this.client = e, this.selectedChannelId = "", this.bindClient(e);
     try {
-      await client.connect(clientId);
-      return client;
-    } catch (error) {
-      await this.destroyClient();
-      throw error;
+      return await e.connect(t), e;
+    } catch (i) {
+      throw await this.destroyClient(), i;
     }
   }
-  bindClient(client) {
+  bindClient(t) {
     this.unbindClientListeners();
-    const onDisconnected = (error) => {
-      if (this.client !== client) {
-        return;
-      }
-      this.selectedChannelId = "";
-      this.stopSpeakingWatchdog();
-      this.stopVoicePolling();
-      void this.clearSubscriptions(false);
-      this.disconnect(error, "Lost connection to Discord.", true);
+    const e = (u) => {
+      this.client === t && (this.selectedChannelId = "", this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.clearSubscriptions(!1), this.disconnect(u, "Lost connection to Discord.", !0));
+    }, i = () => {
+      this.client !== t || !this.state().authenticated || this.refreshVoiceState();
+    }, s = (u) => {
+      i();
+    }, r = () => i(), o = () => i(), c = () => i(), a = (u) => {
+      this.applySpeaking(this.extractUserId(u), !0);
+    }, d = (u) => {
+      this.applySpeaking(this.extractUserId(u), !1);
     };
-    const refreshVoiceState = () => {
-      if (this.client !== client || !this.state().authenticated) {
-        return;
-      }
-      void this.refreshVoiceState();
-    };
-    const onVoiceChannelSelect = (_payload) => {
-      refreshVoiceState();
-    };
-    const onVoiceStateCreate = () => refreshVoiceState();
-    const onVoiceStateUpdate = () => refreshVoiceState();
-    const onVoiceStateDelete = () => refreshVoiceState();
-    const onSpeakingStart = (payload) => {
-      this.applySpeaking(this.extractUserId(payload), true);
-    };
-    const onSpeakingStop = (payload) => {
-      this.applySpeaking(this.extractUserId(payload), false);
-    };
-    client.on("disconnected", onDisconnected);
-    client.on(RPCEvents.VOICE_CHANNEL_SELECT, onVoiceChannelSelect);
-    client.on(RPCEvents.VOICE_STATE_CREATE, onVoiceStateCreate);
-    client.on(RPCEvents.VOICE_STATE_UPDATE, onVoiceStateUpdate);
-    client.on(RPCEvents.VOICE_STATE_DELETE, onVoiceStateDelete);
-    client.on(RPCEvents.SPEAKING_START, onSpeakingStart);
-    client.on(RPCEvents.SPEAKING_STOP, onSpeakingStop);
-    this.clientListenerCleanups = [
-      () => client.off("disconnected", onDisconnected),
-      () => client.off(RPCEvents.VOICE_CHANNEL_SELECT, onVoiceChannelSelect),
-      () => client.off(RPCEvents.VOICE_STATE_CREATE, onVoiceStateCreate),
-      () => client.off(RPCEvents.VOICE_STATE_UPDATE, onVoiceStateUpdate),
-      () => client.off(RPCEvents.VOICE_STATE_DELETE, onVoiceStateDelete),
-      () => client.off(RPCEvents.SPEAKING_START, onSpeakingStart),
-      () => client.off(RPCEvents.SPEAKING_STOP, onSpeakingStop)
+    t.on("disconnected", e), t.on(f.VOICE_CHANNEL_SELECT, s), t.on(f.VOICE_STATE_CREATE, r), t.on(f.VOICE_STATE_UPDATE, o), t.on(f.VOICE_STATE_DELETE, c), t.on(f.SPEAKING_START, a), t.on(f.SPEAKING_STOP, d), this.clientListenerCleanups = [
+      () => t.off("disconnected", e),
+      () => t.off(f.VOICE_CHANNEL_SELECT, s),
+      () => t.off(f.VOICE_STATE_CREATE, r),
+      () => t.off(f.VOICE_STATE_UPDATE, o),
+      () => t.off(f.VOICE_STATE_DELETE, c),
+      () => t.off(f.SPEAKING_START, a),
+      () => t.off(f.SPEAKING_STOP, d)
     ];
   }
   unbindClientListeners() {
-    for (const cleanup of this.clientListenerCleanups) {
-      cleanup();
-    }
+    for (const t of this.clientListenerCleanups)
+      t();
     this.clientListenerCleanups = [];
   }
-  async restoreStoredSession(client, token) {
-    const clientId = this.state().clientId;
-    if (!clientId) {
-      return false;
-    }
+  async restoreStoredSession(t, e) {
+    const i = this.state().clientId;
+    if (!i)
+      return !1;
     try {
-      await client.authenticate({
-        clientId,
-        accessToken: token.accessToken,
-        refreshToken: token.refreshToken
-      });
-      this.persistClientTokens(clientId, client);
-      return true;
-    } catch (error) {
-      if (!this.shouldInvalidateToken(error)) {
-        this.disconnect(error, "Could not restore session.", true);
-        return false;
-      }
+      return await t.authenticate({
+        clientId: i,
+        accessToken: e.accessToken,
+        refreshToken: e.refreshToken
+      }), this.persistClientTokens(i, t), !0;
+    } catch (s) {
+      if (!this.shouldInvalidateToken(s))
+        return this.disconnect(s, "Could not restore session.", !0), !1;
     }
-    if (token.refreshToken) {
+    if (e.refreshToken)
       try {
-        const refreshed = await client.refreshOAuthToken({
-          clientId,
-          refreshToken: token.refreshToken
+        const s = await t.refreshOAuthToken({
+          clientId: i,
+          refreshToken: e.refreshToken
         });
-        if (refreshed?.access_token) {
-          const nextRefreshToken = refreshed.refresh_token ?? token.refreshToken;
-          await client.authenticate({
-            clientId,
-            accessToken: refreshed.access_token,
-            refreshToken: nextRefreshToken
-          });
-          this.persistToken(clientId, {
-            accessToken: refreshed.access_token,
-            refreshToken: nextRefreshToken
-          });
-          return true;
+        if (s?.access_token) {
+          const r = s.refresh_token ?? e.refreshToken;
+          return await t.authenticate({
+            clientId: i,
+            accessToken: s.access_token,
+            refreshToken: r
+          }), this.persistToken(i, {
+            accessToken: s.access_token,
+            refreshToken: r
+          }), !0;
         }
-      } catch (error) {
+      } catch {
       }
-    }
-    this.clearStoredToken(clientId);
-    this.requireAuthorization("Saved authorization expired. Please authorize again.");
-    return false;
+    return this.clearStoredToken(i), this.requireAuthorization("Saved authorization expired. Please authorize again."), !1;
   }
-  async handleAuthenticated(client) {
-    this.reconnectAttempts = 0;
-    this.cancelReconnect();
-    this.patchState({
-      authenticated: true,
-      authorizationRequired: false,
-      retryAvailable: false,
-      hideableDisconnect: false,
+  async handleAuthenticated(t) {
+    this.reconnectAttempts = 0, this.cancelReconnect(), this.patchState({
+      authenticated: !0,
+      authorizationRequired: !1,
+      retryAvailable: !1,
+      hideableDisconnect: !1,
       message: "Loading voice state..."
-    });
-    await this.refreshVoiceState();
-    await this.subscribeToVoiceEvents();
-    this.startSpeakingWatchdog();
-    this.startVoicePolling();
+    }), await this.refreshVoiceState(), await this.subscribeToVoiceEvents(), this.startSpeakingWatchdog(), this.startVoicePolling();
   }
   async subscribeToVoiceEvents() {
-    const client = this.client;
-    if (!client) {
+    const t = this.client;
+    if (!t || (await this.clearSubscriptions(), this.subscriptions.push(
+      await t.subscribe(f.VOICE_CHANNEL_SELECT)
+    ), !this.selectedChannelId))
       return;
-    }
-    await this.clearSubscriptions();
-    this.subscriptions.push(
-      await client.subscribe(RPCEvents.VOICE_CHANNEL_SELECT)
-    );
-    if (!this.selectedChannelId) {
-      return;
-    }
-    const args = { channel_id: this.selectedChannelId };
-    for (const eventName of [
-      RPCEvents.VOICE_STATE_CREATE,
-      RPCEvents.VOICE_STATE_UPDATE,
-      RPCEvents.VOICE_STATE_DELETE,
-      RPCEvents.SPEAKING_START,
-      RPCEvents.SPEAKING_STOP
-    ]) {
-      this.subscriptions.push(await client.subscribe(eventName, args));
-    }
+    const e = { channel_id: this.selectedChannelId };
+    for (const i of [
+      f.VOICE_STATE_CREATE,
+      f.VOICE_STATE_UPDATE,
+      f.VOICE_STATE_DELETE,
+      f.SPEAKING_START,
+      f.SPEAKING_STOP
+    ])
+      this.subscriptions.push(await t.subscribe(i, e));
   }
-  async clearSubscriptions(unsubscribe = true) {
-    const subscriptions = this.subscriptions.splice(0, this.subscriptions.length);
-    if (!unsubscribe) {
-      return;
-    }
-    await Promise.all(
-      subscriptions.map((subscription) => subscription.unsubscribe().catch(() => void 0))
+  async clearSubscriptions(t = !0) {
+    const e = this.subscriptions.splice(0, this.subscriptions.length);
+    t && await Promise.all(
+      e.map((i) => i.unsubscribe().catch(() => {
+      }))
     );
   }
   async refreshVoiceState() {
-    const client = this.client;
-    if (!client) {
+    const t = this.client;
+    if (!t)
       return;
-    }
-    let channel = null;
+    let e = null;
     try {
-      channel = await client.getSelectedVoiceChannel();
-    } catch (error) {
-      if (this.client === client) {
-        this.disconnect(error, "Failed to read the current voice channel.", true);
-      }
+      e = await t.getSelectedVoiceChannel();
+    } catch (l) {
+      this.client === t && this.disconnect(l, "Failed to read the current voice channel.", !0);
       return;
     }
-    if (this.client !== client) {
+    if (this.client !== t)
       return;
-    }
-    const nextChannelId = readString(channel?.id);
-    if (nextChannelId !== this.selectedChannelId) {
-      this.selectedChannelId = nextChannelId;
-      await this.subscribeToVoiceEvents();
-    }
-    const currentParticipants = this.state().participants;
-    const previous = new Map(currentParticipants.map((participant) => [participant.id, participant]));
-    const now = Date.now();
-    const participants = Array.isArray(channel?.voice_states) ? channel.voice_states.map((voiceState) => this.normalizeParticipant(voiceState, previous.get(readString(isRecord(voiceState?.user) ? voiceState.user.id : void 0)), now, channel)).filter((participant) => Boolean(participant)).sort((left, right) => this.participantName(left).localeCompare(this.participantName(right))) : [];
-    const visibleParticipants = participants.some((participant) => participant.isSelf) ? participants : [];
-    const nextMessage = visibleParticipants.length > 0 ? "" : "No active voice call or channel found.";
-    const visibleIds = new Set(visibleParticipants.map((participant) => participant.id));
-    for (const userId of this.liveSpeaking.keys()) {
-      if (!visibleIds.has(userId)) {
-        this.liveSpeaking.delete(userId);
-      }
-    }
-    for (const participant of visibleParticipants) {
-      this.patchParticipantSpeaking(participant.id, participant.speaking);
-    }
-    const participantsChanged = !this.areParticipantsEqual(currentParticipants, visibleParticipants);
-    if (!participantsChanged && this.state().message === nextMessage && this.state().authenticated && !this.state().authorizationRequired && !this.state().retryAvailable) {
-      return;
-    }
-    this.patchState({
-      authenticated: true,
-      authorizationRequired: false,
-      retryAvailable: false,
-      hideableDisconnect: false,
-      participants: visibleParticipants,
-      message: nextMessage
+    const i = p(e?.id);
+    i !== this.selectedChannelId && (this.selectedChannelId = i, await this.subscribeToVoiceEvents());
+    const s = this.state().participants, r = new Map(s.map((l) => [l.id, l])), o = Date.now(), c = Array.isArray(e?.voice_states) ? e.voice_states.map((l) => this.normalizeParticipant(l, r.get(p(g(l?.user) ? l.user.id : void 0)), o, e)).filter((l) => !!l).sort((l, A) => this.participantName(l).localeCompare(this.participantName(A))) : [], a = c.some((l) => l.isSelf) ? c : [], d = a.length > 0 ? "" : "No active voice call or channel found.", u = new Set(a.map((l) => l.id));
+    for (const l of this.liveSpeaking.keys())
+      u.has(l) || this.liveSpeaking.delete(l);
+    for (const l of a)
+      this.patchParticipantSpeaking(l.id, l.speaking);
+    this.areParticipantsEqual(s, a) && this.state().message === d && this.state().authenticated && !this.state().authorizationRequired && !this.state().retryAvailable || this.patchState({
+      authenticated: !0,
+      authorizationRequired: !1,
+      retryAvailable: !1,
+      hideableDisconnect: !1,
+      participants: a,
+      message: d
     });
   }
-  normalizeParticipant(raw, existing, now, channel) {
-    const user = isRecord(raw.user) ? raw.user : isRecord(raw.member) && isRecord(raw.member.user) ? raw.member.user : null;
-    const userId = readString(user?.id);
-    if (!userId) {
+  normalizeParticipant(t, e, i, s) {
+    const r = g(t.user) ? t.user : g(t.member) && g(t.member.user) ? t.member.user : null, o = p(r?.id);
+    if (!o)
       return null;
-    }
-    const member = isRecord(raw.member) ? raw.member : null;
-    const voiceState = isRecord(raw.voice_state) ? raw.voice_state : null;
-    const nick = readString(raw.nick || member?.nick || (isRecord(voiceState?.member) ? voiceState.member.nick : void 0)) || void 0;
-    const username = readString(user?.global_name) || readString(user?.username) || "?";
-    const guildId = readString(
-      voiceState?.guild_id || member?.guild_id || raw.guild_id || channel?.guild_id
-    );
-    const memberAvatarHash = readString(
-      member?.avatar || raw.guild_avatar || raw.avatar || (isRecord(voiceState?.member) ? voiceState.member.avatar : void 0)
-    );
-    const userAvatarHash = readString(user?.avatar);
-    const liveSpeaking = this.liveSpeaking.get(userId);
-    const speaking = typeof raw.speaking === "boolean" ? raw.speaking : liveSpeaking?.speaking ?? existing?.speaking ?? false;
-    const lastSpokeAt = speaking ? liveSpeaking?.lastSpokeAt ?? existing?.lastSpokeAt ?? now : liveSpeaking?.lastSpokeAt ?? existing?.lastSpokeAt ?? 0;
-    this.liveSpeaking.set(userId, { speaking, lastSpokeAt });
-    return {
-      id: userId,
-      username,
-      nick,
+    const c = g(t.member) ? t.member : null, a = g(t.voice_state) ? t.voice_state : null, d = p(t.nick || c?.nick || (g(a?.member) ? a.member.nick : void 0)) || void 0, u = p(r?.global_name) || p(r?.username) || "?", T = p(
+      a?.guild_id || c?.guild_id || t.guild_id || s?.guild_id
+    ), l = p(
+      c?.avatar || t.guild_avatar || t.avatar || (g(a?.member) ? a.member.avatar : void 0)
+    ), A = p(r?.avatar), v = this.liveSpeaking.get(o), O = typeof t.speaking == "boolean" ? t.speaking : v?.speaking ?? e?.speaking ?? !1, M = O ? v?.lastSpokeAt ?? e?.lastSpokeAt ?? i : v?.lastSpokeAt ?? e?.lastSpokeAt ?? 0;
+    return this.liveSpeaking.set(o, { speaking: O, lastSpokeAt: M }), {
+      id: o,
+      username: u,
+      nick: d,
       mute: {
-        user: readBoolean(raw.mute),
-        server: readBoolean(voiceState?.mute) || readBoolean(raw.server_mute),
-        self: readBoolean(voiceState?.self_mute) || readBoolean(raw.self_mute)
+        user: m(t.mute),
+        server: m(a?.mute) || m(t.server_mute),
+        self: m(a?.self_mute) || m(t.self_mute)
       },
       deaf: {
-        server: readBoolean(voiceState?.deaf) || readBoolean(raw.server_deaf),
-        self: readBoolean(voiceState?.self_deaf) || readBoolean(raw.self_deaf)
+        server: m(a?.deaf) || m(t.server_deaf),
+        self: m(a?.self_deaf) || m(t.self_deaf)
       },
-      speaking,
-      isSelf: userId === this.currentUserId(),
-      serverAvatar: guildId && memberAvatarHash ? toAvatarUrl(`guilds/${guildId}/users/${userId}/avatars`, memberAvatarHash) : void 0,
-      avatar: userAvatarHash ? toAvatarUrl(`avatars/${userId}`, userAvatarHash) : void 0,
-      lastSpokeAt
+      speaking: O,
+      isSelf: o === this.currentUserId(),
+      serverAvatar: T && l ? Z(`guilds/${T}/users/${o}/avatars`, l) : void 0,
+      avatar: A ? Z(`avatars/${o}`, A) : void 0,
+      lastSpokeAt: M
     };
   }
-  applySpeaking(userId, speaking) {
-    if (!userId) {
+  applySpeaking(t, e) {
+    if (!t)
       return;
-    }
-    const participant = this.state().participants.find((entry) => entry.id === userId);
-    const existingSpeaking = this.liveSpeaking.get(userId);
-    if (!participant || existingSpeaking?.speaking === speaking) {
+    const i = this.state().participants.find((o) => o.id === t), s = this.liveSpeaking.get(t);
+    if (!i || s?.speaking === e)
       return;
-    }
-    const lastSpokeAt = speaking ? Date.now() : existingSpeaking?.lastSpokeAt ?? participant.lastSpokeAt;
-    this.liveSpeaking.set(userId, { speaking, lastSpokeAt });
-    this.patchParticipantSpeaking(userId, speaking);
+    const r = e ? Date.now() : s?.lastSpokeAt ?? i.lastSpokeAt;
+    this.liveSpeaking.set(t, { speaking: e, lastSpokeAt: r }), this.patchParticipantSpeaking(t, e);
   }
-  patchParticipantSpeaking(userId, speaking) {
-    const participantElement = Array.from(
+  patchParticipantSpeaking(t, e) {
+    Array.from(
       this.ctx.mount.querySelectorAll("[data-participant-id]")
-    ).find((element) => element.getAttribute("data-participant-id") === userId);
-    const avatar = participantElement?.querySelector(".avatar");
-    avatar?.classList.toggle("speaking", speaking);
+    ).find((r) => r.getAttribute("data-participant-id") === t)?.querySelector(".avatar")?.classList.toggle("speaking", e);
   }
-  async toggleParticipantMute(userId) {
-    const client = this.client;
-    const participant = this.state().participants.find((entry) => entry.id === userId);
-    if (!client || !participant) {
-      return;
-    }
-    try {
-      await client.setUserVoiceSettings(userId, { mute: !participant.mute.user });
-      await this.refreshVoiceState();
-    } catch (error) {
-      this.disconnect(error, "Failed to update voice settings.", true);
-    }
+  async toggleParticipantMute(t) {
+    const e = this.client, i = this.state().participants.find((s) => s.id === t);
+    if (!(!e || !i))
+      try {
+        await e.setUserVoiceSettings(t, { mute: !i.mute.user }), await this.refreshVoiceState();
+      } catch (s) {
+        this.disconnect(s, "Failed to update voice settings.", !0);
+      }
   }
   startSpeakingWatchdog() {
-    if (this.speakingWatchdog) {
-      return;
-    }
-    this.speakingWatchdog = setInterval(() => {
-      const now = Date.now();
-      for (const [userId, speakingState] of this.liveSpeaking) {
-        if (!speakingState.speaking || now - speakingState.lastSpokeAt <= SPEAKING_TIMEOUT_MS) {
-          continue;
-        }
-        this.liveSpeaking.set(userId, {
-          speaking: false,
-          lastSpokeAt: speakingState.lastSpokeAt
-        });
-        this.patchParticipantSpeaking(userId, false);
-      }
-    }, SPEAKING_WATCHDOG_INTERVAL_MS);
+    this.speakingWatchdog || (this.speakingWatchdog = setInterval(() => {
+      const t = Date.now();
+      for (const [e, i] of this.liveSpeaking)
+        !i.speaking || t - i.lastSpokeAt <= de || (this.liveSpeaking.set(e, {
+          speaking: !1,
+          lastSpokeAt: i.lastSpokeAt
+        }), this.patchParticipantSpeaking(e, !1));
+    }, ue));
   }
   stopSpeakingWatchdog() {
-    if (!this.speakingWatchdog) {
-      return;
-    }
-    clearInterval(this.speakingWatchdog);
-    this.speakingWatchdog = null;
+    this.speakingWatchdog && (clearInterval(this.speakingWatchdog), this.speakingWatchdog = null);
   }
   startVoicePolling() {
-    if (this.voicePollTimer) {
-      return;
-    }
-    this.voicePollTimer = setInterval(() => {
-      if (!this.state().authenticated || this.state().authorizationRequired) {
-        return;
-      }
-      void this.refreshVoiceState();
-    }, VOICE_POLL_INTERVAL_MS);
+    this.voicePollTimer || (this.voicePollTimer = setInterval(() => {
+      !this.state().authenticated || this.state().authorizationRequired || this.refreshVoiceState();
+    }, fe));
   }
   stopVoicePolling() {
-    if (!this.voicePollTimer) {
-      return;
-    }
-    clearInterval(this.voicePollTimer);
-    this.voicePollTimer = null;
+    this.voicePollTimer && (clearInterval(this.voicePollTimer), this.voicePollTimer = null);
   }
-  disconnect(error, fallback, hideable) {
-    this.reconnectAttempts += 1;
-    this.stopSpeakingWatchdog();
-    this.stopVoicePolling();
-    this.liveSpeaking.clear();
-    this.patchState({
-      authenticated: false,
+  disconnect(t, e, i) {
+    this.reconnectAttempts += 1, this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.liveSpeaking.clear(), this.patchState({
+      authenticated: !1,
       participants: [],
-      authorizationRequired: false,
-      retryAvailable: true,
-      hideableDisconnect: hideable,
-      message: this.formatError(error, fallback)
-    });
-    this.scheduleReconnect();
+      authorizationRequired: !1,
+      retryAvailable: !0,
+      hideableDisconnect: i,
+      message: this.formatError(t, e)
+    }), this.scheduleReconnect();
   }
-  requireAuthorization(message) {
-    this.stopSpeakingWatchdog();
-    this.stopVoicePolling();
-    this.liveSpeaking.clear();
-    this.patchState({
-      authenticated: false,
+  requireAuthorization(t) {
+    this.stopSpeakingWatchdog(), this.stopVoicePolling(), this.liveSpeaking.clear(), this.patchState({
+      authenticated: !1,
       participants: [],
-      authorizationRequired: true,
-      retryAvailable: false,
-      hideableDisconnect: false,
-      isLoading: false,
-      message
+      authorizationRequired: !0,
+      retryAvailable: !1,
+      hideableDisconnect: !1,
+      isLoading: !1,
+      message: t
     });
   }
   scheduleReconnect() {
-    if (this.reconnectTimer || !this.state().clientId || this.state().authorizationRequired) {
+    if (this.reconnectTimer || !this.state().clientId || this.state().authorizationRequired)
       return;
-    }
-    const runId = this.runId;
-    const backoff = Math.min(
-      RECONNECT_BASE_MS * 2 ** Math.min(Math.max(0, this.reconnectAttempts - 1), 4),
-      RECONNECT_MAX_MS
-    );
-    const delay = backoff + Math.round(Math.random() * RECONNECT_JITTER_MS);
+    const t = this.runId, i = Math.min(
+      pe * 2 ** Math.min(Math.max(0, this.reconnectAttempts - 1), 4),
+      Ee
+    ) + Math.round(Math.random() * ge);
     this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (runId !== this.runId || this.state().authenticated || this.state().authorizationRequired) {
-        return;
-      }
-      void this.syncSession("Reconnecting to Discord...");
-    }, delay);
+      this.reconnectTimer = null, !(t !== this.runId || this.state().authenticated || this.state().authorizationRequired) && this.syncSession("Reconnecting to Discord...");
+    }, i);
   }
   cancelReconnect() {
-    if (!this.reconnectTimer) {
-      return;
-    }
-    clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
+    this.reconnectTimer && (clearTimeout(this.reconnectTimer), this.reconnectTimer = null);
   }
   async destroyClient() {
-    const client = this.client;
-    this.client = null;
-    this.selectedChannelId = "";
-    this.unbindClientListeners();
-    await this.clearSubscriptions();
-    if (!client) {
-      return;
-    }
-    releaseSharedDiscordClient(client);
+    const t = this.client;
+    this.client = null, this.selectedChannelId = "", this.unbindClientListeners(), await this.clearSubscriptions(), t && Se(t);
   }
   currentUserId() {
-    const user = this.client?.user;
-    if (!isRecord(user)) {
-      return "";
-    }
-    return readString(user.id);
+    const t = this.client?.user;
+    return g(t) ? p(t.id) : "";
   }
-  extractUserId(payload) {
-    if (!payload) {
-      return "";
-    }
-    if (readString(payload.user_id)) {
-      return readString(payload.user_id);
-    }
-    if (isRecord(payload.user)) {
-      return readString(payload.user.id);
-    }
-    return "";
+  extractUserId(t) {
+    return t ? p(t.user_id) ? p(t.user_id) : g(t.user) ? p(t.user.id) : "" : "";
   }
   shadowsEnabled() {
-    return Boolean(this.config("shadow", false));
+    return !!this.config("shadow", !1);
   }
   alignmentClass() {
-    const alignment = this.config("alignment", "top-left");
-    return typeof alignment === "string" && alignment.length > 0 ? alignment : "top-left";
+    const t = this.config("alignment", "top-left");
+    return typeof t == "string" && t.length > 0 ? t : "top-left";
   }
   participantGridSize() {
-    const configuredSize = String(this.config("participantSize", "default")).trim().toLowerCase();
-    if (configuredSize.startsWith("small")) {
-      return 1;
-    }
-    if (configuredSize.startsWith("large")) {
-      return 3;
-    }
-    if (configuredSize.startsWith("xl")) {
-      return 4;
-    }
-    if (configuredSize.startsWith("xxxl")) {
-      return 6;
-    }
-    if (configuredSize.startsWith("xxl")) {
-      return 5;
-    }
-    return 2;
+    const t = String(this.config("participantSize", "default")).trim().toLowerCase();
+    return t.startsWith("small") ? 1 : t.startsWith("large") ? 3 : t.startsWith("xl") ? 4 : t.startsWith("xxxl") ? 6 : t.startsWith("xxl") ? 5 : 2;
   }
   showWidget() {
     return !this.shouldAutoHide();
   }
   showNames() {
-    return Boolean(this.config("showNames", true));
+    return !!this.config("showNames", !0);
   }
-  participantClasses(participant) {
-    const classes = [];
-    if (participant.isSelf) {
-      classes.push("self");
+  participantClasses(t) {
+    const e = [];
+    return t.isSelf && e.push("self"), this.hasStatusIcon(t) && e.push("muted"), e.join(" ");
+  }
+  participantAvatarUrl(t) {
+    return t.serverAvatar || t.avatar || "";
+  }
+  participantInitials(t) {
+    return this.initials(t.username);
+  }
+  participantName(t) {
+    return t.nick || t.username;
+  }
+  hasStatusIcon(t) {
+    return t.deaf.self || t.deaf.server || t.mute.self || t.mute.server || t.mute.user;
+  }
+  participantIsDeafened(t) {
+    return t.deaf.self || t.deaf.server;
+  }
+  areParticipantsEqual(t, e) {
+    if (t.length !== e.length)
+      return !1;
+    for (let i = 0; i < t.length; i += 1) {
+      const s = t[i], r = e[i];
+      if (s.id !== r.id || s.username !== r.username || s.nick !== r.nick || s.isSelf !== r.isSelf || s.serverAvatar !== r.serverAvatar || s.avatar !== r.avatar || s.deaf.server !== r.deaf.server || s.deaf.self !== r.deaf.self || s.mute.user !== r.mute.user || s.mute.server !== r.mute.server || s.mute.self !== r.mute.self)
+        return !1;
     }
-    if (this.hasStatusIcon(participant)) {
-      classes.push("muted");
-    }
-    return classes.join(" ");
+    return !0;
   }
-  participantAvatarUrl(participant) {
-    return participant.serverAvatar || participant.avatar || "";
-  }
-  participantInitials(participant) {
-    return this.initials(participant.username);
-  }
-  participantName(participant) {
-    return participant.nick || participant.username;
-  }
-  hasStatusIcon(participant) {
-    return participant.deaf.self || participant.deaf.server || participant.mute.self || participant.mute.server || participant.mute.user;
-  }
-  participantIsDeafened(participant) {
-    return participant.deaf.self || participant.deaf.server;
-  }
-  areParticipantsEqual(current, next) {
-    if (current.length !== next.length) {
-      return false;
-    }
-    for (let index = 0; index < current.length; index += 1) {
-      const left = current[index];
-      const right = next[index];
-      if (left.id !== right.id || left.username !== right.username || left.nick !== right.nick || left.isSelf !== right.isSelf || left.serverAvatar !== right.serverAvatar || left.avatar !== right.avatar || left.deaf.server !== right.deaf.server || left.deaf.self !== right.deaf.self || left.mute.user !== right.mute.user || left.mute.server !== right.mute.server || left.mute.self !== right.mute.self) {
-        return false;
-      }
-    }
-    return true;
-  }
-  patchState(patch) {
-    this.state.update((state) => {
-      for (const [key, value] of Object.entries(patch)) {
-        if (state[key] !== value) {
-          return { ...state, ...patch };
-        }
-      }
-      return state;
+  patchState(t) {
+    this.state.update((e) => {
+      for (const [i, s] of Object.entries(t))
+        if (e[i] !== s)
+          return { ...e, ...t };
+      return e;
     });
   }
-  setBusy(isLoading, message) {
-    this.state.update((state) => {
-      const nextMessage = message ?? state.message;
-      if (state.isLoading === isLoading && state.message === nextMessage) {
-        return state;
-      }
-      return {
-        ...state,
-        isLoading,
-        message: nextMessage
+  setBusy(t, e) {
+    this.state.update((i) => {
+      const s = e ?? i.message;
+      return i.isLoading === t && i.message === s ? i : {
+        ...i,
+        isLoading: t,
+        message: s
       };
     });
   }
   beginRun() {
-    this.runId += 1;
-    return this.runId;
+    return this.runId += 1, this.runId;
   }
   invalidateRun() {
-    this.runId += 1;
-    this.setBusy(false);
+    this.runId += 1, this.setBusy(!1);
   }
-  isCurrentRun(runId) {
-    return this.runId === runId;
+  isCurrentRun(t) {
+    return this.runId === t;
   }
-  config(key, fallback) {
-    const config = this.payload().config;
-    if (!isRecord(config)) {
-      return fallback;
-    }
-    return config[key] ?? fallback;
+  config(t, e) {
+    const i = this.payload().config;
+    return g(i) ? i[t] ?? e : e;
   }
   clientId() {
     return String(this.config("clientId", "")).trim();
   }
   redirectUri() {
-    return String(this.config("redirectUri", DEFAULT_DISCORD_REDIRECT_URI)).trim() || DEFAULT_DISCORD_REDIRECT_URI;
+    return String(this.config("redirectUri", X)).trim() || X;
   }
   hasClientId() {
     return this.state().clientId.length > 0;
   }
   shouldAutoHide() {
-    if (!Boolean(this.config("autoHide", false)) || !this.hasClientId()) {
-      return false;
-    }
-    const state = this.state();
-    if (state.authorizationRequired || state.retryAvailable && !state.hideableDisconnect) {
-      return false;
-    }
-    return this.state().participants.length === 0;
+    if (!this.config("autoHide", !1) || !this.hasClientId())
+      return !1;
+    const t = this.state();
+    return t.authorizationRequired || t.retryAvailable && !t.hideableDisconnect ? !1 : this.state().participants.length === 0;
   }
-  readStoredToken(clientId) {
-    const raw = localStorage.getItem(`${STORAGE_PREFIX}${clientId}`);
-    if (!raw) {
+  readStoredToken(t) {
+    const e = localStorage.getItem(`${P}${t}`);
+    if (!e)
       return null;
-    }
     try {
-      const parsed = JSON.parse(raw);
-      const accessToken = readString(parsed.accessToken);
-      const refreshToken = readString(parsed.refreshToken) || void 0;
-      return accessToken ? { accessToken, refreshToken } : null;
+      const i = JSON.parse(e), s = p(i.accessToken), r = p(i.refreshToken) || void 0;
+      return s ? { accessToken: s, refreshToken: r } : null;
     } catch {
       return null;
     }
   }
-  persistClientTokens(clientId, client) {
-    const accessToken = readString(client.accessToken);
-    if (!accessToken) {
+  persistClientTokens(t, e) {
+    const i = p(e.accessToken);
+    if (!i)
       return;
-    }
-    const storedRefreshToken = this.readStoredToken(clientId)?.refreshToken;
-    this.persistToken(clientId, {
-      accessToken,
-      refreshToken: readString(client.refreshToken) || storedRefreshToken
+    const s = this.readStoredToken(t)?.refreshToken;
+    this.persistToken(t, {
+      accessToken: i,
+      refreshToken: p(e.refreshToken) || s
     });
   }
-  persistToken(clientId, token) {
-    localStorage.setItem(`${STORAGE_PREFIX}${clientId}`, JSON.stringify(token));
+  persistToken(t, e) {
+    localStorage.setItem(`${P}${t}`, JSON.stringify(e));
   }
-  clearStoredToken(clientId) {
-    localStorage.removeItem(`${STORAGE_PREFIX}${clientId}`);
+  clearStoredToken(t) {
+    localStorage.removeItem(`${P}${t}`);
   }
-  shouldInvalidateToken(error) {
-    if (!(error instanceof Error)) {
-      return false;
-    }
-    const message = error.message.toLowerCase();
-    return message.includes("invalid access token") || message.includes("invalid oauth2 access token") || message.includes("authentication failed") || message.includes("invalid_grant") || message.includes("401");
+  shouldInvalidateToken(t) {
+    if (!(t instanceof Error))
+      return !1;
+    const e = t.message.toLowerCase();
+    return e.includes("invalid access token") || e.includes("invalid oauth2 access token") || e.includes("authentication failed") || e.includes("invalid_grant") || e.includes("401");
   }
   async isDiscordRunning() {
-    if (discordStatusCache && discordStatusCache.expiresAt > Date.now()) {
-      return discordStatusCache.running;
-    }
-    if (discordStatusProbe) {
-      return discordStatusProbe;
-    }
-    discordStatusProbe = Promise.all(
-      getDiscordIpcEndpoints().map((endpoint) => ipcTransportEndpointExists(endpoint).catch(() => false))
-    ).then((checks) => {
-      const running = checks.some(Boolean);
-      discordStatusCache = {
-        running,
-        expiresAt: Date.now() + DISCORD_STATUS_CACHE_MS
-      };
-      return running;
+    return b && b.expiresAt > Date.now() ? b.running : C || (C = Promise.all(
+      ye().map((t) => et(t).catch(() => !1))
+    ).then((t) => {
+      const e = t.some(Boolean);
+      return b = {
+        running: e,
+        expiresAt: Date.now() + me
+      }, e;
     }).finally(() => {
-      discordStatusProbe = null;
-    });
-    return discordStatusProbe;
+      C = null;
+    }), C);
   }
-  formatError(error, fallback) {
-    if (error instanceof Error) {
-      if (error.message.includes("RPC_CONNECTION_TIMEOUT")) {
-        return "Connection to Discord timed out.";
-      }
-      if (error.message.includes("endpoint is not available")) {
-        return "Discord is not running, or IPC access is unavailable.";
-      }
-      if (error.message.toLowerCase().includes("invalid client")) {
-        return "Discord rejected the Client ID. Check that it is a valid Discord application Client ID.";
-      }
-      if (error.message.toLowerCase().includes("rpc request timed out")) {
-        return `${error.message} Discord may be busy, disconnected, or refusing this application.`;
-      }
-      if (error.message.includes("Could not connect")) {
-        return "Could not connect to the Discord client.";
-      }
-      return error.message;
-    }
-    return fallback;
+  formatError(t, e) {
+    return t instanceof Error ? t.message.includes("RPC_CONNECTION_TIMEOUT") ? "Connection to Discord timed out." : t.message.includes("endpoint is not available") ? "Discord is not running, or IPC access is unavailable." : t.message.toLowerCase().includes("invalid client") ? "Discord rejected the Client ID. Check that it is a valid Discord application Client ID." : t.message.toLowerCase().includes("rpc request timed out") ? `${t.message} Discord may be busy, disconnected, or refusing this application.` : t.message.includes("Could not connect") ? "Could not connect to the Discord client." : t.message : e;
   }
-  initials(value) {
-    const tokens = value.split(/\s+/).map((token) => token.trim()).filter(Boolean);
-    if (tokens.length === 0) {
-      return "?";
-    }
-    return tokens.slice(0, 2).map((token) => token[0]?.toUpperCase() ?? "").join("") || "?";
+  initials(t) {
+    const e = t.split(/\s+/).map((i) => i.trim()).filter(Boolean);
+    return e.length === 0 ? "?" : e.slice(0, 2).map((i) => i[0]?.toUpperCase() ?? "").join("") || "?";
   }
 };
-const template = '{{#if showWidget()}}\n  <div class="discord-ipc-wrapper {{#if shadowsEnabled()}}shadows{{/if}}">\n    <div class="discord-ipc align-{{alignmentClass()}}">\n      {{#if state().participants.length > 0}}\n        <div class="participants-view">\n          <div class="participants">\n            {{#each state().participants}}\n              <div\n                class="participant {{participantClasses(this)}}"\n                data-participant-id="{{this.id}}"\n                style="--participant-size: {{participantGridSize()}};"\n              >\n                <div class="avatar">\n                  {{#if participantAvatarUrl(this)}}\n                    <img src="{{participantAvatarUrl(this)}}" alt="{{this.username}}" loading="lazy" decoding="async" />\n                  {{/if}}\n                  {{#if !participantAvatarUrl(this)}}\n                    <div class="avatar-fallback">{{participantInitials(this)}}</div>\n                  {{/if}}\n                  {{#if hasStatusIcon(this)}}\n                    <div class="mute">\n                      {{#if participantIsDeafened(this)}}\n                        <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="Deafened" />\n                      {{/if}}\n                      {{#if this.mute.self && !participantIsDeafened(this)}}\n                        <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="Self muted" />\n                      {{/if}}\n                      {{#if this.mute.server && !this.mute.self && !participantIsDeafened(this)}}\n                        <img src="{{ASSETS}}/img/mic-servermuted.png" alt="Server muted" />\n                      {{/if}}\n                      {{#if this.mute.user && !this.mute.self && !this.mute.server && !participantIsDeafened(this)}}\n                        <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="Muted" />\n                      {{/if}}\n                    </div>\n                  {{/if}}\n                </div>\n                {{#if showNames()}}\n                  <div class="name-wrapper">\n                    <div class="name">{{participantName(this)}}</div>\n                  </div>\n                {{/if}}\n              </div>\n            {{/each}}\n          </div>\n        </div>\n      {{/if}}\n\n      {{#if state().participants.length === 0}}\n        <div class="disconnected-view">\n          <div class="icon">\n            {{#if state().isLoading}}\n              <img src="{{ASSETS}}/img/loader.gif" alt="Loading" />\n            {{/if}}\n            {{#if !state().isLoading}}\n              <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" />\n            {{/if}}\n          </div>\n          <div class="message">\n            {{#if hasClientId()}}\n              {{state().message}}\n            {{/if}}\n            {{#if !hasClientId()}}\n              No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.\n            {{/if}}\n          </div>\n          {{#if hasClientId() && !state().isLoading && (state().authorizationRequired || state().retryAvailable)}}\n            <button id="login-btn" type="button" class="connect-button">\n              {{#if state().authorizationRequired}}Authorize Discord{{/if}}\n              {{#if !state().authorizationRequired}}Try Again{{/if}}\n            </button>\n          {{/if}}\n        </div>\n      {{/if}}\n    </div>\n  </div>\n{{/if}}\n';
-const styles = "img.invert {\n  --filters: invert(100%);\n}\n\n.discord-ipc-wrapper {\n  display: flex;\n  flex-direction: column;\n  width: 100%;\n  height: 100%;\n  overflow: hidden;\n  container-type: size;\n}\n.discord-ipc-wrapper.shadows {\n  filter: drop-shadow(-1px 1px 1px #000000);\n}\n\n.discord-ipc {\n  display: flex;\n  width: 100%;\n  height: 100%;\n  flex-direction: column;\n}\n\n.participants-view {\n  width: 100%;\n  height: 100%;\n  min-width: 0;\n  min-height: 0;\n  container-type: size;\n}\n\n.participants {\n  display: flex;\n  flex-direction: row;\n  flex-wrap: wrap;\n  align-items: flex-start;\n  align-content: flex-start;\n  justify-content: flex-start;\n  width: 100%;\n  height: 100%;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  gap: clamp(2px, 0.5em, 8px);\n}\n\n.align-top-center .participants,\n.align-center-center .participants,\n.align-bottom-center .participants {\n  justify-content: center;\n}\n\n.align-top-right .participants,\n.align-center-right .participants,\n.align-bottom-right .participants {\n  justify-content: flex-end;\n}\n\n.align-center-left .participants,\n.align-center-center .participants,\n.align-center-right .participants {\n  align-items: center;\n  align-content: center;\n}\n\n.align-bottom-left .participants,\n.align-bottom-center .participants,\n.align-bottom-right .participants {\n  align-items: flex-end;\n  align-content: flex-end;\n}\n\n.participant {\n  position: relative;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  justify-content: center;\n  flex: 0 0 calc(var(--cell-width, 60px) * var(--participant-size));\n  width: calc(var(--cell-width, 60px) * var(--participant-size));\n  height: calc(var(--cell-width, 60px) * var(--participant-size));\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  aspect-ratio: 1/1;\n  transform: scale(0.7);\n  opacity: 0;\n  animation: popIn var(--transition) forwards;\n  animation-delay: var(--animation-delay);\n}\n.participant.muted .avatar > img {\n  filter: grayscale(100%) brightness(50%);\n}\n.participant.muted .avatar .mute {\n  opacity: 1;\n  visibility: visible;\n}\n\n.avatar {\n  position: relative;\n  width: min(75%, 75cqh);\n  height: auto;\n  aspect-ratio: 1/1;\n  max-width: 75%;\n  max-height: 75%;\n  flex: 0 0 auto;\n  background: rgba(255, 255, 255, 0.12);\n  border: max(0.15em, 5px) solid transparent;\n  border-radius: 0.25em;\n  transition: border-color var(--transition);\n}\n.avatar > img {\n  width: 100%;\n  height: 100%;\n  object-fit: cover;\n  display: block;\n  border-radius: 0.25em;\n  transition: filter var(--transition);\n}\n.avatar.speaking {\n  border-color: rgb(112, 224, 112);\n}\n\n.avatar-fallback {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  font-size: 0.7em;\n  font-weight: 700;\n  letter-spacing: 0.04em;\n  color: rgba(255, 255, 255, 0.9);\n}\n\n.mute {\n  display: flex;\n  position: absolute;\n  inset: 0;\n  font-size: max(1em, var(--host-width) / 15);\n  justify-content: center;\n  align-items: center;\n  gap: 0.2em;\n  opacity: 0;\n  visibility: hidden;\n  transition: opacity var(--transition), visibility var(--transition);\n}\n.mute img {\n  width: 30%;\n  max-width: 100%;\n  filter: var(--filters) drop-shadow(1px 1px 0.25em rgba(0, 0, 0, 0.5));\n}\n\n.name-wrapper {\n  width: 100%;\n  max-height: 25%;\n  font-size: clamp(8px, 4.5cqw, 22px);\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  padding: 0 0.15em;\n}\n\n.name {\n  display: block;\n  padding: 0 0.25em;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  text-align: center;\n}\n\n.disconnected-view {\n  width: 100%;\n  height: 100%;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n  align-items: center;\n  text-align: center;\n  gap: 0.65em;\n  padding: 0.75em;\n  box-sizing: border-box;\n}\n\n.icon img {\n  width: 3em;\n  filter: var(--filters);\n}\n\n.message {\n  text-transform: uppercase;\n  line-height: 1.3;\n}\n\n.connect-button {\n  border: 0;\n  border-radius: 0.35em;\n  padding: 0.35em 0.6em;\n  background: rgba(255, 255, 255, 0.18);\n  color: inherit;\n  font-size: 1.2em;\n  text-transform: uppercase;\n  transition: opacity var(--transition);\n}\n\n@keyframes popIn {\n  0% {\n    transform: scale(0.7);\n    opacity: 0;\n  }\n  100% {\n    transform: scale(1);\n    opacity: 1;\n  }\n}";
-const DisplayDuckWidget2 = createWidgetClass(DisplayDuckWidget$1, { template, styles });
-const Widget = DisplayDuckWidget2;
-const displayduckPackDiscordIpc_discordIpc_entry = { DisplayDuckWidget: DisplayDuckWidget2, Widget };
+const Ae = `{{#if showWidget()}}
+  <div class="discord-ipc-wrapper {{#if shadowsEnabled()}}shadows{{/if}}">
+    <div class="discord-ipc align-{{alignmentClass()}}">
+      {{#if state().participants.length > 0}}
+        <div class="participants-view">
+          <div class="participants">
+            {{#each state().participants}}
+              <div
+                class="participant {{participantClasses(this)}}"
+                data-participant-id="{{this.id}}"
+                style="--participant-size: {{participantGridSize()}};"
+              >
+                <div class="avatar">
+                  {{#if participantAvatarUrl(this)}}
+                    <img src="{{participantAvatarUrl(this)}}" alt="{{this.username}}" loading="lazy" decoding="async" />
+                  {{/if}}
+                  {{#if !participantAvatarUrl(this)}}
+                    <div class="avatar-fallback">{{participantInitials(this)}}</div>
+                  {{/if}}
+                  {{#if hasStatusIcon(this)}}
+                    <div class="mute">
+                      {{#if participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="Deafened" />
+                      {{/if}}
+                      {{#if this.mute.self && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="Self muted" />
+                      {{/if}}
+                      {{#if this.mute.server && !this.mute.self && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-servermuted.png" alt="Server muted" />
+                      {{/if}}
+                      {{#if this.mute.user && !this.mute.self && !this.mute.server && !participantIsDeafened(this)}}
+                        <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="Muted" />
+                      {{/if}}
+                    </div>
+                  {{/if}}
+                </div>
+                {{#if showNames()}}
+                  <div class="name-wrapper">
+                    <div class="name">{{participantName(this)}}</div>
+                  </div>
+                {{/if}}
+              </div>
+            {{/each}}
+          </div>
+        </div>
+      {{/if}}
+
+      {{#if state().participants.length === 0}}
+        <div class="disconnected-view">
+          <div class="icon">
+            {{#if state().isLoading}}
+              <img src="{{ASSETS}}/img/loader.gif" alt="Loading" />
+            {{/if}}
+            {{#if !state().isLoading}}
+              <img src="{{ASSETS}}/img/discord.png" class="invert" alt="Discord" />
+            {{/if}}
+          </div>
+          <div class="message">
+            {{#if hasClientId()}}
+              {{state().message}}
+            {{/if}}
+            {{#if !hasClientId()}}
+              No Discord Client ID provided. Please set a valid Client ID in the widget settings to use the Discord IPC widget.
+            {{/if}}
+          </div>
+          {{#if hasClientId() && !state().isLoading && (state().authorizationRequired || state().retryAvailable)}}
+            <button id="login-btn" type="button" class="connect-button">
+              {{#if state().authorizationRequired}}Authorize Discord{{/if}}
+              {{#if !state().authorizationRequired}}Try Again{{/if}}
+            </button>
+          {{/if}}
+        </div>
+      {{/if}}
+    </div>
+  </div>
+{{/if}}
+`, we = "img.invert{--filters: invert(100%)}.discord-ipc-wrapper{display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;container-type:size}.discord-ipc-wrapper.shadows{filter:drop-shadow(-1px 1px 1px #000000)}.discord-ipc{display:flex;width:100%;height:100%;flex-direction:column}.participants-view{width:100%;height:100%;min-width:0;min-height:0;container-type:size}.participants{display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;align-content:flex-start;justify-content:flex-start;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;gap:clamp(2px,.5em,8px)}.align-top-center .participants,.align-center-center .participants,.align-bottom-center .participants{justify-content:center}.align-top-right .participants,.align-center-right .participants,.align-bottom-right .participants{justify-content:flex-end}.align-center-left .participants,.align-center-center .participants,.align-center-right .participants{align-items:center;align-content:center}.align-bottom-left .participants,.align-bottom-center .participants,.align-bottom-right .participants{align-items:flex-end;align-content:flex-end}.participant{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;flex:0 0 calc(var(--cell-width, 60px) * var(--participant-size));width:calc(var(--cell-width, 60px) * var(--participant-size));height:calc(var(--cell-width, 60px) * var(--participant-size));min-width:0;min-height:0;overflow:hidden;aspect-ratio:1/1;transform:scale(.7);opacity:0;animation:popIn var(--transition) forwards;animation-delay:var(--animation-delay)}.participant.muted .avatar>img{filter:grayscale(100%) brightness(50%)}.participant.muted .avatar .mute{opacity:1;visibility:visible}.avatar{position:relative;width:min(75%,75cqh);height:auto;aspect-ratio:1/1;max-width:75%;max-height:75%;flex:0 0 auto;background:#ffffff1f;border:max(.15em,5px) solid transparent;border-radius:.25em;transition:border-color var(--transition)}.avatar>img{width:100%;height:100%;object-fit:cover;display:block;border-radius:.25em;transition:filter var(--transition)}.avatar.speaking{border-color:#70e070}.avatar-fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.7em;font-weight:700;letter-spacing:.04em;color:#ffffffe6}.mute{display:flex;position:absolute;inset:0;font-size:max(1em,var(--host-width) / 15);justify-content:center;align-items:center;gap:.2em;opacity:0;visibility:hidden;transition:opacity var(--transition),visibility var(--transition)}.mute img{width:30%;max-width:100%;filter:var(--filters) drop-shadow(1px 1px .25em rgba(0,0,0,.5))}.name-wrapper{width:100%;max-height:25%;font-size:clamp(8px,4.5cqw,22px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 .15em}.name{display:block;padding:0 .25em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center}.disconnected-view{width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:.65em;padding:.75em;box-sizing:border-box}.icon img{width:3em;filter:var(--filters)}.message{text-transform:uppercase;line-height:1.3}.connect-button{border:0;border-radius:.35em;padding:.35em .6em;background:#ffffff2e;color:inherit;font-size:1.2em;text-transform:uppercase;transition:opacity var(--transition)}@keyframes popIn{0%{transform:scale(.7);opacity:0}to{transform:scale(1);opacity:1}}", at = Ht(Ce, { template: Ae, styles: we }), be = at, ve = { DisplayDuckWidget: at, Widget: be };
 export {
-  DisplayDuckWidget2 as DisplayDuckWidget,
-  Widget,
-  displayduckPackDiscordIpc_discordIpc_entry as default
+  at as DisplayDuckWidget,
+  be as Widget,
+  ve as default
 };
-//# sourceMappingURL=discord-ipc.js.map
