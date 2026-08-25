@@ -21,6 +21,15 @@ import type {
 import type { ClientOptions, EventHandler, PendingRequest, RpcFrame } from './types';
 
 const RPC_REQUEST_TIMEOUT_MS = 8000;
+const RPC_CONNECT_TIMEOUT_MS = 10_000;
+// Discord only sends its one-time READY dispatch to the pipe attacher that
+// performed the handshake. When this Client attaches to an IPC session another
+// window/instance already brought up (see acquireSharedDiscordClient in
+// discord-ipc.ts), that READY frame was already consumed elsewhere and will
+// never arrive here, so waiting on it alone would always time out. Give a
+// fresh handshake a head start, then fall back to a harmless probe request to
+// confirm the shared pipe is actually live.
+const READY_PROBE_DELAY_MS = 1500;
 
 const subKey = (event: string, args?: unknown): string => {
   return `${event}${JSON.stringify(args)}`;
@@ -196,8 +205,9 @@ export class Client extends EventEmitter {
       this._connectPromise = undefined;
     }
 
-    this._connectPromise = new Promise((resolve, reject) => {
+    this._connectPromise = new Promise<Client>((resolve, reject) => {
       this.clientId = clientId;
+      let readyProbeTimer: ReturnType<typeof setTimeout> | null = null;
 
       const onConnected = () => {
         cleanup();
@@ -211,6 +221,9 @@ export class Client extends EventEmitter {
 
       const cleanup = () => {
         clearTimeout(timeout);
+        if (readyProbeTimer) {
+          clearTimeout(readyProbeTimer);
+        }
         this.off('connected', onConnected);
         this.off('disconnected', onDisconnected);
       };
@@ -218,15 +231,23 @@ export class Client extends EventEmitter {
       const timeout = setTimeout(() => {
         cleanup();
         reject(new Error('RPC_CONNECTION_TIMEOUT'));
-      }, 10_000);
+      }, RPC_CONNECT_TIMEOUT_MS);
 
       this.on('connected', onConnected);
       this.on('disconnected', onDisconnected);
 
-      this.transport.connect().then((reused) => {
-        if (reused) {
-          onConnected();
-        }
+      this.transport.connect().then(() => {
+        readyProbeTimer = setTimeout(() => {
+          if (!this.transport.socket) {
+            return;
+          }
+          this.request(RPCCommands.GET_SELECTED_VOICE_CHANNEL)
+            .then(() => onConnected())
+            .catch(() => {
+              // Either genuinely not ready yet or a real problem; either way
+              // the READY/disconnected/timeout listeners above still decide.
+            });
+        }, READY_PROBE_DELAY_MS);
       }).catch((error) => {
         cleanup();
         reject(error);

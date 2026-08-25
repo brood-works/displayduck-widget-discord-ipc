@@ -11,28 +11,20 @@
                 style="--participant-size: {{participantGridSize()}};"
               >
                 <div class="avatar">
-                  {{#if participantAvatarUrl(this)}}
-                    <img src="{{participantAvatarUrl(this)}}" alt="{{this.username}}" loading="lazy" decoding="async" />
-                  {{/if}}
-                  {{#if !participantAvatarUrl(this)}}
-                    <div class="avatar-fallback">{{participantInitials(this)}}</div>
-                  {{/if}}
-                  {{#if hasStatusIcon(this)}}
-                    <div class="mute">
-                      {{#if participantIsDeafened(this)}}
-                        <img src="{{ASSETS}}/img/deafened.png" class="invert" alt="Deafened" />
-                      {{/if}}
-                      {{#if this.mute.self && !participantIsDeafened(this)}}
-                        <img src="{{ASSETS}}/img/mic-selfmuted.png" class="invert" alt="Self muted" />
-                      {{/if}}
-                      {{#if this.mute.server && !this.mute.self && !participantIsDeafened(this)}}
-                        <img src="{{ASSETS}}/img/mic-servermuted.png" alt="Server muted" />
-                      {{/if}}
-                      {{#if this.mute.user && !this.mute.self && !this.mute.server && !participantIsDeafened(this)}}
-                        <img src="{{ASSETS}}/img/mic-muted.png" class="invert" alt="Muted" />
-                      {{/if}}
-                    </div>
-                  {{/if}}
+                  <img
+                    class="avatar-image {{#if !participantAvatarUrl(this)}}hidden{{/if}}"
+                    src="{{participantAvatarUrl(this)}}"
+                    alt="{{this.username}}"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <div class="avatar-fallback {{#if participantAvatarUrl(this)}}hidden{{/if}}">{{participantInitials(this)}}</div>
+                  <div class="mute">
+                    <img class="mute-icon mute-icon-deafened invert {{#if !participantIsDeafened(this)}}hidden{{/if}}" src="{{ASSETS}}/img/deafened.png" alt="Deafened" />
+                    <img class="mute-icon mute-icon-selfmuted invert {{#if !(this.mute.self && !participantIsDeafened(this))}}hidden{{/if}}" src="{{ASSETS}}/img/mic-selfmuted.png" alt="Self muted" />
+                    <img class="mute-icon mute-icon-servermuted {{#if !(this.mute.server && !this.mute.self && !participantIsDeafened(this))}}hidden{{/if}}" src="{{ASSETS}}/img/mic-servermuted.png" alt="Server muted" />
+                    <img class="mute-icon mute-icon-usermuted invert {{#if !(this.mute.user && !this.mute.self && !this.mute.server && !participantIsDeafened(this))}}hidden{{/if}}" src="{{ASSETS}}/img/mic-muted.png" alt="Muted" />
+                  </div>
                 </div>
                 {{#if showNames()}}
                   <div class="name-wrapper">

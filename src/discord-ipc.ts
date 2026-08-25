@@ -23,6 +23,26 @@ const RECONNECT_MAX_MS = 30000;
 const RECONNECT_JITTER_MS = 750;
 const DISCORD_STATUS_CACHE_MS = 2500;
 const SHARED_CLIENT_IDLE_MS = 3000;
+// A single voice-state poll can time out simply because Discord was briefly
+// busy (large channel, OS scheduling jitter) without the IPC connection
+// actually being lost -- a real disconnect is already handled separately via
+// the client's own 'disconnected' event (see bindClient). Only escalate to a
+// full disconnect/reconnect after several consecutive poll failures.
+const MAX_VOICE_STATE_FAILURE_STREAK = 3;
+
+type MuteIconVariantKey = 'deafened' | 'selfmuted' | 'servermuted' | 'usermuted';
+
+// Mirrors the four mutually-exclusive status icons in discord-ipc.html,
+// which pre-renders all of them (hidden except the active one) so a
+// per-participant field patch only needs to toggle a class -- never create a
+// new pack-asset <img>, which would need asset-path resolution this code
+// does not have access to (see createParticipantElement).
+const MUTE_ICON_VARIANTS: Array<{ key: MuteIconVariantKey; file: string; alt: string; invert: boolean }> = [
+  { key: 'deafened', file: 'deafened.png', alt: 'Deafened', invert: true },
+  { key: 'selfmuted', file: 'mic-selfmuted.png', alt: 'Self muted', invert: true },
+  { key: 'servermuted', file: 'mic-servermuted.png', alt: 'Server muted', invert: false },
+  { key: 'usermuted', file: 'mic-muted.png', alt: 'Muted', invert: true },
+];
 
 let discordStatusCache: { running: boolean; expiresAt: number } | null = null;
 let discordStatusProbe: Promise<boolean> | null = null;
@@ -49,11 +69,18 @@ const sharedDiscordClients = (() => {
   return globalScope.__displayduckDiscordClients;
 })();
 
-const acquireSharedDiscordClient = (clientId: string): Client => {
+const acquireSharedDiscordClient = (clientId: string, allowLocalhostAccess: boolean): Client => {
   let shared = sharedDiscordClients.get(clientId);
   if (!shared) {
+    // Discord's IPC pipe is gated behind the "Allow localhost access" widget
+    // permission (Rust rejects pack_ipc_transport_* without it) -- this is
+    // only read when the shared Client is first created for this clientId.
+    // If a later widget instance with the same clientId but a different
+    // setting attaches to an already-live client, its setting won't
+    // retroactively apply; that's an accepted limitation of sharing one IPC
+    // connection across instances.
     shared = {
-      client: new Client(),
+      client: new Client({ allowLocalhostAccess }),
       clientId,
       references: 0,
       closeTimer: null,
@@ -141,6 +168,20 @@ export class DisplayDuckWidget {
   private runId = 0;
   private selectedChannelId = '';
   private readonly liveSpeaking = new Map<string, { speaking: boolean; lastSpokeAt: number }>();
+  private voiceStateFailureStreak = 0;
+  private voiceStateRefreshInFlight: Promise<void> | null = null;
+  private voiceStateRefreshQueued = false;
+  // Ground truth for who is currently on the call and their per-participant
+  // state (mute/deaf/avatar/name/speaking). The `state` signal only carries
+  // enough to decide which top-level template branch is showing
+  // (disconnected-view vs participants-view) -- it does not track individual
+  // participants once the grid exists. Steady-state joins/leaves/field
+  // changes are applied directly to the DOM (see reconcileParticipants) so a
+  // signal write -- and the full-template rebuild that follows it -- only
+  // happens for that rare top-level view transition, never for routine call
+  // activity.
+  private readonly participantsById = new Map<string, DiscordParticipant>();
+  private participantOrder: string[] = [];
 
   public constructor(private readonly ctx: WidgetContext) {
     this.payload = signal(ctx.payload ?? {});
@@ -158,7 +199,15 @@ export class DisplayDuckWidget {
 
   public afterRender(): void {
     this.ctx.mount.style.display = '';
-    for (const participant of this.state().participants) {
+    // A full template render just rebuilt the grid from `state().participants`
+    // (or removed it entirely). Re-sync the ground-truth store to match
+    // exactly what is now in the DOM so future joins/leaves/field changes can
+    // be reconciled in place from an accurate baseline.
+    const rendered = this.state().participants;
+    this.participantsById.clear();
+    this.participantOrder = rendered.map((participant) => participant.id);
+    for (const participant of rendered) {
+      this.participantsById.set(participant.id, participant);
       this.patchParticipantSpeaking(
         participant.id,
         this.liveSpeaking.get(participant.id)?.speaking ?? participant.speaking,
@@ -193,6 +242,14 @@ export class DisplayDuckWidget {
   }
 
   public onUpdate(payload: Record<string, unknown>): void {
+    // `payload` is itself a signal (see bindSignals in the framework
+    // runtime), so writing to it below triggers a full render regardless of
+    // whether the Discord client actually changed -- e.g. any other widget
+    // setting being edited (alignment, showNames, ...) lands here too. Steady
+    // -state reconciliation never writes participants back into `state`, so
+    // without this sync that render would use the stale pre-reconciliation
+    // snapshot instead of who is actually on the call right now.
+    this.syncParticipantsSignalFromGroundTruth();
     this.payload.set(payload ?? {});
     const nextClientId = this.clientId();
     if (nextClientId === this.state().clientId) {
@@ -204,6 +261,7 @@ export class DisplayDuckWidget {
     this.stopVoicePolling();
     this.cancelReconnect();
     this.liveSpeaking.clear();
+    this.voiceStateFailureStreak = 0;
     void this.destroyClient();
 
     this.patchState({
@@ -228,6 +286,7 @@ export class DisplayDuckWidget {
     this.stopVoicePolling();
     this.cancelReconnect();
     this.liveSpeaking.clear();
+    this.voiceStateFailureStreak = 0;
     void this.destroyClient();
   }
 
@@ -343,7 +402,7 @@ export class DisplayDuckWidget {
 
     await this.destroyClient();
 
-    const client = acquireSharedDiscordClient(clientId);
+    const client = acquireSharedDiscordClient(clientId, this.allowLocalhostAccess());
     this.client = client;
     this.selectedChannelId = '';
     this.bindClient(client);
@@ -470,6 +529,7 @@ export class DisplayDuckWidget {
 
   private async handleAuthenticated(client: Client): Promise<void> {
     this.reconnectAttempts = 0;
+    this.voiceStateFailureStreak = 0;
     this.cancelReconnect();
     this.patchState({
       authenticated: true,
@@ -525,6 +585,30 @@ export class DisplayDuckWidget {
   }
 
   private async refreshVoiceState(): Promise<void> {
+    // Voice-state change events (create/update/delete/select) can arrive in
+    // quick bursts -- e.g. several participants' mute state changing near-
+    // simultaneously -- and each independently asks for a refresh. Without
+    // coalescing this fires one concurrent GET_SELECTED_VOICE_CHANNEL request
+    // per event, which under load is exactly what pushes individual requests
+    // past their timeout. Collapse bursts into one in-flight request plus at
+    // most one trailing follow-up.
+    if (this.voiceStateRefreshInFlight) {
+      this.voiceStateRefreshQueued = true;
+      return this.voiceStateRefreshInFlight;
+    }
+
+    this.voiceStateRefreshInFlight = this.performVoiceStateRefresh().finally(() => {
+      this.voiceStateRefreshInFlight = null;
+      if (this.voiceStateRefreshQueued) {
+        this.voiceStateRefreshQueued = false;
+        void this.refreshVoiceState();
+      }
+    });
+
+    return this.voiceStateRefreshInFlight;
+  }
+
+  private async performVoiceStateRefresh(): Promise<void> {
     const client = this.client;
     if (!client) {
       return;
@@ -534,11 +618,22 @@ export class DisplayDuckWidget {
     try {
       channel = await client.getSelectedVoiceChannel() as DiscordSelectedVoiceChannel;
     } catch (error) {
-      if (this.client === client) {
-        this.disconnect(error, 'Failed to read the current voice channel.', true);
+      if (this.client !== client) {
+        return;
       }
+
+      this.voiceStateFailureStreak += 1;
+      if (this.voiceStateFailureStreak < MAX_VOICE_STATE_FAILURE_STREAK) {
+        // Transient hiccup -- the next poll tick (or the next voice-state
+        // event) will try again without disturbing the visible widget state.
+        return;
+      }
+
+      this.disconnect(error, 'Failed to read the current voice channel.', true);
       return;
     }
+
+    this.voiceStateFailureStreak = 0;
 
     if (this.client !== client) {
       return;
@@ -550,17 +645,17 @@ export class DisplayDuckWidget {
       await this.subscribeToVoiceEvents();
     }
 
-    const currentParticipants = this.state().participants;
-    const previous = new Map(currentParticipants.map((participant) => [participant.id, participant]));
+    // Ground truth (participantsById), not the state signal, is the source
+    // of "who do we currently know about" -- it stays accurate across
+    // in-place reconciliations that never touch the signal.
     const now = Date.now();
     const participants = Array.isArray(channel?.voice_states)
       ? channel.voice_states
-          .map((voiceState) => this.normalizeParticipant(voiceState, previous.get(readString(isRecord(voiceState?.user) ? voiceState.user.id : undefined)), now, channel))
+          .map((voiceState) => this.normalizeParticipant(voiceState, this.participantsById.get(readString(isRecord(voiceState?.user) ? voiceState.user.id : undefined)), now, channel))
           .filter((participant): participant is DiscordParticipant => Boolean(participant))
           .sort((left, right) => this.participantName(left).localeCompare(this.participantName(right)))
       : [];
     const visibleParticipants = participants.some((participant) => participant.isSelf) ? participants : [];
-    const nextMessage = visibleParticipants.length > 0 ? '' : 'No active voice call or channel found.';
 
     const visibleIds = new Set(visibleParticipants.map((participant) => participant.id));
     for (const userId of this.liveSpeaking.keys()) {
@@ -569,29 +664,212 @@ export class DisplayDuckWidget {
       }
     }
 
-    for (const participant of visibleParticipants) {
-      this.patchParticipantSpeaking(participant.id, participant.speaking);
-    }
+    const wasShowingParticipants = this.participantOrder.length > 0;
+    const willShowParticipants = visibleParticipants.length > 0;
+    const state = this.state();
+    const flagsNeedFullRender = !state.authenticated || state.authorizationRequired || state.retryAvailable;
 
-    const participantsChanged = !this.areParticipantsEqual(currentParticipants, visibleParticipants);
-    if (
-      !participantsChanged
-      && this.state().message === nextMessage
-      && this.state().authenticated
-      && !this.state().authorizationRequired
-      && !this.state().retryAvailable
-    ) {
+    if (wasShowingParticipants && willShowParticipants && !flagsNeedFullRender) {
+      // Steady state: the grid is already showing and keeps showing. Patch
+      // only the participants whose fields actually changed, add/remove DOM
+      // nodes for who joined/left, and never touch the `state` signal -- so
+      // no full-template rebuild happens for routine call activity.
+      this.reconcileParticipants(visibleParticipants);
       return;
     }
 
+    // Either the grid is appearing/disappearing (empty <-> non-empty is a
+    // structural template-branch swap) or the top-level connection flags
+    // need to settle -- both require the normal signal-driven full render.
     this.patchState({
       authenticated: true,
       authorizationRequired: false,
       retryAvailable: false,
       hideableDisconnect: false,
       participants: visibleParticipants,
-      message: nextMessage,
+      message: willShowParticipants ? '' : 'No active voice call or channel found.',
     });
+  }
+
+  private reconcileParticipants(nextParticipants: DiscordParticipant[]): void {
+    const grid = this.ctx.mount.querySelector<HTMLElement>('.participants');
+    if (!grid) {
+      // Lost track of the grid element somehow; fall back to a full render
+      // next cycle by clearing the ground truth so wasShowingParticipants
+      // is false and the safe path runs.
+      this.participantsById.clear();
+      this.participantOrder = [];
+      this.patchState({ participants: nextParticipants, message: '' });
+      return;
+    }
+
+    const nextIds = nextParticipants.map((participant) => participant.id);
+    const nextById = new Map(nextParticipants.map((participant) => [participant.id, participant] as const));
+    const previousIds = new Set(this.participantOrder);
+
+    for (const id of previousIds) {
+      if (nextById.has(id)) {
+        continue;
+      }
+      this.findParticipantElement(id)?.remove();
+      this.participantsById.delete(id);
+    }
+
+    for (const participant of nextParticipants) {
+      const existingElement = this.findParticipantElement(participant.id);
+      if (existingElement) {
+        this.patchParticipantElement(existingElement, participant);
+        continue;
+      }
+
+      const element = this.createParticipantElement(participant);
+      this.insertParticipantElementSorted(grid, element, participant, nextParticipants);
+    }
+
+    this.participantsById.clear();
+    for (const participant of nextParticipants) {
+      this.participantsById.set(participant.id, participant);
+    }
+    this.participantOrder = nextIds;
+
+    for (const participant of nextParticipants) {
+      this.patchParticipantSpeaking(participant.id, participant.speaking);
+    }
+  }
+
+  private findParticipantElement(userId: string): HTMLElement | undefined {
+    return Array.from(
+      this.ctx.mount.querySelectorAll<HTMLElement>('[data-participant-id]'),
+    ).find((element) => element.getAttribute('data-participant-id') === userId);
+  }
+
+  private insertParticipantElementSorted(
+    grid: HTMLElement,
+    element: HTMLElement,
+    participant: DiscordParticipant,
+    orderedParticipants: DiscordParticipant[],
+  ): void {
+    const index = orderedParticipants.findIndex((entry) => entry.id === participant.id);
+    const nextSibling = orderedParticipants
+      .slice(index + 1)
+      .map((entry) => this.findParticipantElement(entry.id))
+      .find((candidate): candidate is HTMLElement => Boolean(candidate));
+
+    if (nextSibling) {
+      grid.insertBefore(element, nextSibling);
+    } else {
+      grid.appendChild(element);
+    }
+  }
+
+  private createParticipantElement(participant: DiscordParticipant): HTMLElement {
+    const element = document.createElement('div');
+    element.setAttribute('data-participant-id', participant.id);
+    // Pop-in animation, opacity and transform are all handled by the
+    // .participant CSS rule itself (discord-ipc.scss) -- setting them again
+    // inline here would only fight the stylesheet with higher-specificity
+    // duplicates for no benefit.
+    element.style.setProperty('--participant-size', String(this.participantGridSize()));
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+
+    const avatarImage = document.createElement('img');
+    avatarImage.className = 'avatar-image';
+    avatarImage.loading = 'lazy';
+    avatarImage.decoding = 'async';
+
+    const avatarFallback = document.createElement('div');
+    avatarFallback.className = 'avatar-fallback';
+
+    const mute = document.createElement('div');
+    mute.className = 'mute';
+    for (const variant of MUTE_ICON_VARIANTS) {
+      const icon = document.createElement('img');
+      icon.className = `mute-icon mute-icon-${variant.key}${variant.invert ? ' invert' : ''}`;
+      // Plain relative path -- the framework's own asset-rewriting
+      // MutationObserver (already watching ctx.mount) resolves this to the
+      // pack's real installed asset URL, the same mechanism the initial
+      // template render uses for the {{ASSETS}} placeholder.
+      icon.setAttribute('src', `img/${variant.file}`);
+      icon.alt = variant.alt;
+      mute.appendChild(icon);
+    }
+
+    avatar.append(avatarImage, avatarFallback, mute);
+    element.appendChild(avatar);
+
+    if (this.showNames()) {
+      const nameWrapper = document.createElement('div');
+      nameWrapper.className = 'name-wrapper';
+      const name = document.createElement('div');
+      name.className = 'name';
+      nameWrapper.appendChild(name);
+      element.appendChild(nameWrapper);
+    }
+
+    // Click handling is delegated once in onInit() via ctx.on('click',
+    // '[data-participant-id]', ...), which matches this node through normal
+    // event bubbling -- no per-node listener needed here.
+    this.patchParticipantElement(element, participant);
+    return element;
+  }
+
+  private patchParticipantElement(element: HTMLElement, participant: DiscordParticipant): void {
+    element.className = `participant ${this.participantClasses(participant)}`.trim();
+
+    const avatarUrl = this.participantAvatarUrl(participant);
+    const avatarImage = element.querySelector<HTMLImageElement>('.avatar-image');
+    if (avatarImage) {
+      if (avatarUrl) {
+        if (avatarImage.getAttribute('src') !== avatarUrl) {
+          avatarImage.setAttribute('src', avatarUrl);
+        }
+        avatarImage.alt = participant.username;
+        avatarImage.classList.remove('hidden');
+      } else {
+        avatarImage.removeAttribute('src');
+        avatarImage.classList.add('hidden');
+      }
+    }
+
+    const avatarFallback = element.querySelector<HTMLElement>('.avatar-fallback');
+    if (avatarFallback) {
+      avatarFallback.classList.toggle('hidden', Boolean(avatarUrl));
+      if (!avatarUrl) {
+        avatarFallback.textContent = this.participantInitials(participant);
+      }
+    }
+
+    const activeVariant = this.activeMuteIconVariant(participant);
+    for (const variant of MUTE_ICON_VARIANTS) {
+      const icon = element.querySelector<HTMLElement>(`.mute-icon-${variant.key}`);
+      icon?.classList.toggle('hidden', variant.key !== activeVariant);
+    }
+
+    if (this.showNames()) {
+      const nameElement = element.querySelector<HTMLElement>('.name');
+      const displayName = this.participantName(participant);
+      if (nameElement && nameElement.textContent !== displayName) {
+        nameElement.textContent = displayName;
+      }
+    }
+  }
+
+  private activeMuteIconVariant(participant: DiscordParticipant): MuteIconVariantKey | null {
+    if (this.participantIsDeafened(participant)) {
+      return 'deafened';
+    }
+    if (participant.mute.self) {
+      return 'selfmuted';
+    }
+    if (participant.mute.server) {
+      return 'servermuted';
+    }
+    if (participant.mute.user) {
+      return 'usermuted';
+    }
+    return null;
   }
 
   private normalizeParticipant(
@@ -662,7 +940,7 @@ export class DisplayDuckWidget {
       return;
     }
 
-    const participant = this.state().participants.find((entry) => entry.id === userId);
+    const participant = this.participantsById.get(userId);
     const existingSpeaking = this.liveSpeaking.get(userId);
     if (!participant || existingSpeaking?.speaking === speaking) {
       return;
@@ -676,16 +954,13 @@ export class DisplayDuckWidget {
   }
 
   private patchParticipantSpeaking(userId: string, speaking: boolean): void {
-    const participantElement = Array.from(
-      this.ctx.mount.querySelectorAll<HTMLElement>('[data-participant-id]'),
-    ).find((element) => element.getAttribute('data-participant-id') === userId);
-    const avatar = participantElement?.querySelector<HTMLElement>('.avatar');
+    const avatar = this.findParticipantElement(userId)?.querySelector<HTMLElement>('.avatar');
     avatar?.classList.toggle('speaking', speaking);
   }
 
   private async toggleParticipantMute(userId: string): Promise<void> {
     const client = this.client;
-    const participant = this.state().participants.find((entry) => entry.id === userId);
+    const participant = this.participantsById.get(userId);
     if (!client || !participant) {
       return;
     }
@@ -694,7 +969,11 @@ export class DisplayDuckWidget {
       await client.setUserVoiceSettings(userId, { mute: !participant.mute.user });
       await this.refreshVoiceState();
     } catch (error) {
-      this.disconnect(error, 'Failed to update voice settings.', true);
+      // A failed mute toggle (e.g. one slow RPC round-trip) isn't evidence the
+      // connection itself is gone -- that's already handled via the client's
+      // 'disconnected' event. Just leave the toggle un-applied; the user can
+      // retry the click.
+      console.warn('[discord-ipc] Failed to update voice settings.', error);
     }
   }
 
@@ -753,6 +1032,7 @@ export class DisplayDuckWidget {
 
   private disconnect(error: unknown, fallback: string, hideable: boolean): void {
     this.reconnectAttempts += 1;
+    this.voiceStateFailureStreak = 0;
     this.stopSpeakingWatchdog();
     this.stopVoicePolling();
     this.liveSpeaking.clear();
@@ -923,32 +1203,15 @@ export class DisplayDuckWidget {
     return participant.deaf.self || participant.deaf.server;
   }
 
-  private areParticipantsEqual(current: DiscordParticipant[], next: DiscordParticipant[]): boolean {
-    if (current.length !== next.length) {
-      return false;
+  private syncParticipantsSignalFromGroundTruth(): void {
+    if (this.participantOrder.length === 0 && this.state().participants.length === 0) {
+      return;
     }
 
-    for (let index = 0; index < current.length; index += 1) {
-      const left = current[index];
-      const right = next[index];
-      if (
-        left.id !== right.id
-        || left.username !== right.username
-        || left.nick !== right.nick
-        || left.isSelf !== right.isSelf
-        || left.serverAvatar !== right.serverAvatar
-        || left.avatar !== right.avatar
-        || left.deaf.server !== right.deaf.server
-        || left.deaf.self !== right.deaf.self
-        || left.mute.user !== right.mute.user
-        || left.mute.server !== right.mute.server
-        || left.mute.self !== right.mute.self
-      ) {
-        return false;
-      }
-    }
-
-    return true;
+    const ordered = this.participantOrder
+      .map((id) => this.participantsById.get(id))
+      .filter((participant): participant is DiscordParticipant => Boolean(participant));
+    this.patchState({ participants: ordered });
   }
 
   private patchState(patch: Partial<DiscordWidgetState>): void {
@@ -1007,6 +1270,14 @@ export class DisplayDuckWidget {
 
   private redirectUri(): string {
     return String(this.config('redirectUri', DEFAULT_DISCORD_REDIRECT_URI)).trim() || DEFAULT_DISCORD_REDIRECT_URI;
+  }
+
+  // Discord's IPC pipe/socket connection requires this widget instance's
+  // "Allow localhost access" permission (config key allowEventAccess, part
+  // of every widget's default config) -- without it Rust rejects every
+  // pack_ipc_transport_* command outright.
+  private allowLocalhostAccess(): boolean {
+    return Boolean(this.config('allowEventAccess', false));
   }
 
   private hasClientId(): boolean {
@@ -1087,8 +1358,10 @@ export class DisplayDuckWidget {
       return discordStatusProbe;
     }
 
+    const allowLocalhostAccess = this.allowLocalhostAccess();
     discordStatusProbe = Promise.all(
-      getDiscordIpcEndpoints().map((endpoint) => ipcTransportEndpointExists(endpoint).catch(() => false)),
+      getDiscordIpcEndpoints().map((endpoint) =>
+        ipcTransportEndpointExists(endpoint, allowLocalhostAccess).catch(() => false)),
     ).then((checks) => {
       const running = checks.some(Boolean);
       discordStatusCache = {

@@ -16,6 +16,12 @@ export type RpcFrame = {
 export type ClientOptions = {
   ipcEndpoints?: string[];
   pid?: number;
+  // Discord's IPC socket/pipe is gated behind the widget's "Allow localhost
+  // access" permission (Rust rejects pack_ipc_transport_* commands without
+  // it) -- this is the per-widget-instance value of that toggle at the time
+  // the shared Client was created (see acquireSharedDiscordClient in
+  // discord-ipc.ts).
+  allowLocalhostAccess?: boolean;
 };
 
 export type DiscordMuteState = {

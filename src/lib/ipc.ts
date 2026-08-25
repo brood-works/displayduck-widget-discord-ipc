@@ -67,8 +67,9 @@ const hasCustomEndpoints = (client: Client): boolean => {
 };
 
 const getReachableEndpoints = async (client: Client): Promise<string[]> => {
+  const allowLocalhostAccess = Boolean(client.options?.allowLocalhostAccess);
   const candidates = getCandidateEndpoints(client);
-  const cacheKey = candidates.join('\u0000');
+  const cacheKey = (allowLocalhostAccess ? '1' : '0') + candidates.join('\u0000');
   if (endpointCache && endpointCache.key === cacheKey && endpointCache.expiresAt > Date.now()) {
     return endpointCache.endpoints;
   }
@@ -80,7 +81,7 @@ const getReachableEndpoints = async (client: Client): Promise<string[]> => {
   const promise = Promise.all(
     candidates.map(async (endpoint) => ({
       endpoint,
-      exists: await ipcTransportEndpointExists(endpoint).catch(() => false),
+      exists: await ipcTransportEndpointExists(endpoint, allowLocalhostAccess).catch(() => false),
     })),
   ).then((checks) => {
     const endpoints = checks
@@ -162,7 +163,7 @@ export class IPCTransport extends EventEmitter {
   public client: Client;
   public socket: ProxyIpcTransport | null = null;
   private buffer = new Uint8Array(0);
-  private connectPromise: Promise<boolean> | null = null;
+  private connectPromise: Promise<void> | null = null;
   private connectionGeneration = 0;
 
   public constructor(client: Client) {
@@ -170,9 +171,9 @@ export class IPCTransport extends EventEmitter {
     this.client = client;
   }
 
-  public async connect(): Promise<boolean> {
+  public async connect(): Promise<void> {
     if (this.socket) {
-      return false;
+      return;
     }
 
     if (this.connectPromise) {
@@ -186,7 +187,7 @@ export class IPCTransport extends EventEmitter {
     return this.connectPromise;
   }
 
-  public send(data: unknown, op = OPCodes.FRAME): void {
+  public send(data: unknown, op: number = OPCodes.FRAME): void {
     if (!this.socket) {
       throw new Error('IPC transport is not connected');
     }
@@ -264,7 +265,7 @@ export class IPCTransport extends EventEmitter {
     }
   }
 
-  private async connectInternal(generation: number): Promise<boolean> {
+  private async connectInternal(generation: number): Promise<void> {
     this.buffer = new Uint8Array(0);
     const candidateEndpoints = getCandidateEndpoints(this.client);
     const reachableEndpoints = await getReachableEndpoints(this.client);
@@ -285,6 +286,7 @@ export class IPCTransport extends EventEmitter {
         const transport = new ProxyIpcTransport({
           endpoint,
           sessionId: getSharedSessionId(this.client.clientId, endpoint),
+          allowLocalhostAccess: Boolean(this.client.options?.allowLocalhostAccess),
         });
         const unbindOpen = transport.on('open', () => {
           this.emit('open');
@@ -301,7 +303,14 @@ export class IPCTransport extends EventEmitter {
         });
 
         try {
-          const reused = await transport.connectWithInitialWrite(
+          // The underlying transport's connectWithInitialWrite() only ever
+          // resolves void -- Rust's pack_ipc_transport_connect does report
+          // whether it reused an existing session, but that boolean is
+          // discarded before it reaches this layer. Client.connect() no
+          // longer waits on that signal for this reason (see its READY-probe
+          // fallback); this call succeeding at all just means the pipe/socket
+          // is attached.
+          await transport.connectWithInitialWrite(
             encode(OPCodes.HANDSHAKE, {
               v: 1,
               client_id: this.client.clientId,
@@ -312,7 +321,7 @@ export class IPCTransport extends EventEmitter {
             throw new Error('Discord IPC connection was cancelled.');
           }
           this.socket = transport;
-          return reused;
+          return;
         } catch (error) {
           unbindOpen();
           unbindData();

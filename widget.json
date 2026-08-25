@@ -17,6 +17,12 @@
             "minWidth": 200,
             "minHeight": 100,
             "config": {
+                "allowEventAccess": {
+                    "label": "Allow localhost access",
+                    "subLabel": "Required for this widget to talk to Discord's local IPC socket. Discord IPC cannot function with this disabled.",
+                    "type": "boolean",
+                    "defaultValue": true
+                },
                 "autoHide": {
                     "label": "Auto-hide",
                     "subLabel": "Hide when not in a channel, or Discord is not running",

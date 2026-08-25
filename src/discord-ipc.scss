@@ -4,6 +4,14 @@ img {
   }
 }
 
+// Avatar image/fallback and individual mute-status icons are always present
+// in the DOM (see discord-ipc.ts) so that per-participant state changes can
+// toggle visibility in place instead of rebuilding the whole participant
+// grid on every mute/deaf/avatar change.
+.hidden {
+  display: none;
+}
+
 .discord-ipc-wrapper {
   display: flex;
   flex-direction: column;
